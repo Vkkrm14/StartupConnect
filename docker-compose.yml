@@ -1,0 +1,275 @@
+version: '3.8'
+
+networks:
+  trustgraph-network:
+    driver: bridge
+
+volumes:
+  cassandra_data:
+  mongodb_data:
+  elasticsearch_data:
+  redis_data:
+  redpanda_data:
+
+services:
+
+  # ========================================
+  # Cassandra (Graph Storage Backend)
+  # ========================================
+  cassandra:
+    image: cassandra:4.1
+    container_name: trustgraph-cassandra
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: TrustGraphCluster
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - trustgraph-network
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster'"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  # ========================================
+  # Elasticsearch (Search + Graph Index)
+  # ========================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: trustgraph-elasticsearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      cluster.name: trustgraph-cluster
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - trustgraph-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ========================================
+  # JanusGraph Server
+  # ========================================
+  janusgraph:
+    image: janusgraph/janusgraph:1.0.0
+    container_name: trustgraph-janusgraph
+    restart: unless-stopped
+    ports:
+      - "8182:8182"
+      - "8184:8184"
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      JAVA_OPTIONS: "-Xms512m -Xmx2g"
+    volumes:
+      - ./backend/graph-service/config/janusgraph-server.yaml:/etc/opt/janusgraph/janusgraph-server.yaml
+      - ./backend/graph-service/config/janusgraph-cassandra-es.properties:/opt/janusgraph/conf/janusgraph.properties
+      - ./backend/graph-service/scripts:/opt/janusgraph/scripts
+    command: >
+      /opt/janusgraph/bin/janusgraph-server.sh /etc/opt/janusgraph/janusgraph-server.yaml
+    networks:
+      - trustgraph-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'cat < /dev/null > /dev/tcp/localhost/8182'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # ========================================
+  # MongoDB (Document DB)
+  # ========================================
+  mongodb:
+    image: mongo:7.0
+    container_name: trustgraph-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: trustgraph
+      MONGO_INITDB_ROOT_PASSWORD: trustgraph_secure_2024
+      MONGO_INITDB_DATABASE: trustgraph_db
+    volumes:
+      - mongodb_data:/data/db
+      - ./backend/scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - trustgraph-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # Redis (Cache + Queue)
+  # ========================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: trustgraph-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - trustgraph-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # Redpanda (Kafka)
+  # ========================================
+  redpanda:
+    image: redpandadata/redpanda:v23.3.7
+    container_name: trustgraph-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://redpanda:9092
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    networks:
+      - trustgraph-network
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ========================================
+  # API Gateway
+  # ========================================
+  api-gateway:
+    build: ./backend/api-gateway
+    container_name: trustgraph-api-gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: development
+      GRAPH_SERVICE_URL: http://graph-service:8001
+      WORKFLOW_SERVICE_URL: http://workflow-service:8002
+      SEARCH_SERVICE_URL: http://search-service:8003
+      REDIS_URL: redis://redis:6379
+      MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
+    depends_on:
+      - redis
+      - mongodb
+      - janusgraph
+    networks:
+      - trustgraph-network
+    volumes:
+      - ./backend/api-gateway:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ========================================
+  # Graph Service
+  # ========================================
+  graph-service:
+    build: ./backend/graph-service
+    container_name: trustgraph-graph-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      ENV: development
+      JANUSGRAPH_URL: ws://janusgraph:8182/gremlin
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+    depends_on:
+      janusgraph:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - trustgraph-network
+    volumes:
+      - ./backend/graph-service:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+  # ========================================
+  # Workflow Service
+  # ========================================
+  workflow-service:
+    build: ./backend/workflow-service
+    container_name: trustgraph-workflow-service
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      ENV: development
+      MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - trustgraph-network
+    volumes:
+      - ./backend/workflow-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+  # ========================================
+  # Search Service
+  # ========================================
+  search-service:
+    build: ./backend/search-service
+    container_name: trustgraph-search-service
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      ENV: development
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - trustgraph-network
+    volumes:
+      - ./backend/search-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload

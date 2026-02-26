@@ -1,0 +1,910 @@
+# TrustGraph (StartupConnect) — Project Documentation
+
+> Production-style documentation for new developers joining the project.
+
+---
+
+## 1. Project Overview
+
+### What problem the product solves
+TrustGraph is a trust-weighted graph platform that helps founders get “warm introductions” to investors (and other ecosystem participants) through trusted connectors. Instead of cold outreach, TrustGraph discovers and ranks introduction paths across a social/professional network, then manages the approval workflow for intermediaries.
+
+### Target users
+- **Founders**: seeking introductions to relevant investors.
+- **Investors**: receiving curated intro requests through trusted paths.
+- **Connectors / Operators**: people who can vouch for others and approve/decline intros.
+- **Platform admins / developers**: maintaining trust, search, and workflow systems.
+
+### Key capabilities
+- **Trust-weighted relationship graph** (users/startups/orgs + trust edges).
+- **Introduction path discovery** (multi-hop, ranked paths with success probability).
+- **Workflow engine** for stepwise approvals and completion/decline states.
+- **Search & discovery** using Elasticsearch with optional graph-aware reranking.
+- **Event-driven integrations** (Kafka/Redpanda topics; consumers for indexing and trust updates).
+- **Containerized local stack** via Docker Compose.
+
+### High-level architecture summary
+- **Frontend**: Flutter application.
+- **Backend**: FastAPI-based microservices.
+- **Datastores**:
+  - **JanusGraph** (graph) backed by **Cassandra** (storage) and **Elasticsearch** (index backend for JanusGraph).
+  - **MongoDB** for workflow/state documents.
+  - **Elasticsearch** for application search indices (users/startups/organizations).
+  - **Redis** for caching and shared fast state.
+- **Messaging**: **Redpanda** (Kafka-compatible) for events.
+
+Mermaid overview:
+
+```mermaid
+flowchart LR
+  subgraph Client
+    F[Flutter App]
+  end
+
+  subgraph Backend
+    G[API Gateway\nFastAPI :8000]
+    GS[Graph Service\nFastAPI :8001]
+    WS[Workflow Service\nFastAPI :8002]
+    SS[Search Service\nFastAPI :8003]
+  end
+
+  subgraph Data
+    J[JanusGraph\nGremlin :8182]
+    C[(Cassandra :9042)]
+    ES[(Elasticsearch :9200)]
+    M[(MongoDB :27017)]
+    R[(Redis :6379)]
+    K[(Redpanda/Kafka :9092)]
+  end
+
+  F -->|HTTP| G
+  G -->|HTTP| GS
+  G -->|HTTP| WS
+  G -->|HTTP| SS
+
+  GS -->|Gremlin WS| J
+  J --> C
+  J --> ES
+
+  WS --> M
+  SS --> ES
+
+  GS --> R
+  WS --> R
+  SS --> R
+  G --> R
+
+  G -->|produce events| K
+  WS -->|produce events| K
+  SS -->|consume events| K
+  GS -->|consume events| K
+```
+
+---
+
+## 2. Architecture Deep Dive
+
+### System architecture (detailed)
+TrustGraph follows a microservices style where each service owns a focused capability:
+- **API Gateway**: client entry point (auth + proxy endpoints).
+- **Graph Service**: graph CRUD + trust scoring + path discovery.
+- **Workflow Service**: intro request state machine persisted in MongoDB.
+- **Search Service**: Elasticsearch-backed search + optional graph-aware reranking.
+
+Cross-cutting capabilities are implemented in **backend/shared**:
+- JWT creation/validation
+- Redis client wrapper
+- Kafka producer/consumer wrappers
+
+### Services/modules and responsibilities
+- **backend/api-gateway**
+  - Authentication endpoints (`/api/v1/auth/*`).
+  - Limited set of proxy routes to backend services.
+  - Aggregated health endpoint.
+
+- **backend/graph-service**
+  - Vertex management: users, startups (and schemas for organizations).
+  - Edge management: TRUSTS (and service-layer support for other edges).
+  - Path discovery: ranked intro paths up to a hop limit.
+  - Trust & reputation scoring and decay.
+
+- **backend/workflow-service**
+  - Create intro request, track current approver, and record approvals.
+  - Update intro status: pending → approved → completed (or declined).
+  - Sends notifications (email/push framework) and emits events.
+
+- **backend/search-service**
+  - Full-text and filtered search for users/startups.
+  - Autocomplete.
+  - Indexing endpoints plus Kafka consumer that can index documents from events.
+  - Graph-aware reranking by calling Graph Service path discovery.
+
+### How services communicate
+- **Synchronous HTTP (REST)**
+  - API Gateway calls Graph/Workflow/Search over internal Docker network.
+  - Search Service can call Graph Service for ranking (`/api/v1/paths/discover`).
+
+- **Asynchronous events (Kafka/Redpanda)**
+  - API Gateway (auth) publishes `user_created` to `user-events`.
+  - Workflow Service publishes intro events to `intro-events`.
+  - Search Service consumes user/startup events to index into Elasticsearch.
+  - Graph Service consumes intro/graph events to update trust/reputation.
+
+### Data flow: request → storage → response
+
+#### A) User registration
+1. Client calls **API Gateway** `POST /api/v1/auth/register`.
+2. API Gateway creates the user in **Graph Service** (`POST /api/v1/vertices/users`).
+3. API Gateway returns JWT access/refresh tokens to the client.
+4. API Gateway emits `user_created` to Kafka topic `user-events`.
+5. **Search Service consumer** receives the event and indexes the user in Elasticsearch.
+
+#### B) Intro path discovery
+1. Client calls **API Gateway** `POST /api/v1/paths/discover`.
+2. API Gateway proxies to **Graph Service** path discovery.
+3. Graph Service traverses JanusGraph trust edges up to $\text{MAX\_INTRO\_PATH\_HOPS}$, scores paths, and returns ranked paths.
+
+#### C) Intro workflow
+1. Client calls **API Gateway** `POST /api/v1/intros`.
+2. API Gateway proxies to **Workflow Service**.
+3. Workflow Service stores an `intro_requests` document in MongoDB and returns the created intro object.
+4. Workflow Service emits `intro_created` to topic `intro-events`.
+5. Workflow consumer (optional) sends notifications to the next approver.
+
+Mermaid sequence diagram for a typical intro creation:
+
+```mermaid
+sequenceDiagram
+  participant App as Flutter App
+  participant GW as API Gateway
+  participant GS as Graph Service
+  participant WS as Workflow Service
+  participant K as Kafka/Redpanda
+  participant M as MongoDB
+
+  App->>GW: POST /api/v1/paths/discover
+  GW->>GS: POST /api/v1/paths/discover
+  GS-->>GW: Ranked paths
+  GW-->>App: Ranked paths
+
+  App->>GW: POST /api/v1/intros (selected path)
+  GW->>WS: POST /api/v1/intros
+  WS->>M: insert intro_requests
+  WS-->>GW: intro_id + status
+  WS-->>K: publish intro_created
+  GW-->>App: intro created
+```
+
+---
+
+## 3. Technology Stack
+
+### Technologies used
+- **Flutter + Dart**: cross-platform client app.
+- **FastAPI (Python)**: microservices REST APIs.
+- **JanusGraph + Gremlin**: graph database for trust network and traversals.
+- **Cassandra**: durable storage backend for JanusGraph.
+- **Elasticsearch**:
+  - As a JanusGraph index backend (in the JanusGraph stack).
+  - As the app-level search engine for users/startups/orgs.
+- **MongoDB**: intro workflow documents and supporting collections.
+- **Redis**: caching and low-latency state.
+- **Redpanda (Kafka-compatible)**: event streaming for async workflows.
+- **Docker Compose**: local orchestration.
+
+### Why each was chosen (with tradeoffs)
+- **Flutter**: single codebase for web/mobile/desktop; rapid UI iteration.
+  - Tradeoff: requires Dart/Flutter expertise; native integrations can be more complex.
+- **FastAPI**: fast development, async-friendly, built-in OpenAPI docs.
+  - Alternative: Django REST Framework (heavier), Node.js (same async benefits but different ecosystem).
+- **JanusGraph**: scalable graph model fits trust networks + multi-hop traversals.
+  - Alternative: Neo4j (great DX, but different licensing/deployment profile); AWS Neptune (managed).
+- **Cassandra**: proven wide-column store suited for JanusGraph’s persistence layer.
+  - Tradeoff: operational overhead; eventual-consistency model.
+- **Elasticsearch**: excellent full-text + filtering + scoring; also integrates with JanusGraph.
+  - Alternative: OpenSearch; Postgres full-text (simpler stack but weaker fuzzy ranking at scale).
+- **MongoDB**: flexible schema for workflow documents and evolving intro request fields.
+  - Alternative: Postgres for stronger transactions; would require more rigid schema migrations.
+- **Redis**: excellent caching and counters; simple operational model.
+  - Alternative: Memcached (no persistence); in-process caches (not shared).
+- **Kafka/Redpanda**: decouples services and enables near real-time indexing and trust updates.
+  - Tradeoff: added operational complexity; ordering/duplication requires careful design.
+
+---
+
+## 4. Infrastructure & Deployment
+
+### Docker / containers / services
+The project is designed to run locally via Docker Compose. Containers include:
+- `cassandra` (JanusGraph storage backend)
+- `elasticsearch` (search + JanusGraph index backend)
+- `janusgraph` (Gremlin server)
+- `mongodb`
+- `redis`
+- `redpanda` (Kafka-compatible broker)
+- `api-gateway`, `graph-service`, `workflow-service`, `search-service`
+
+### Environment variables
+Environment variables are loaded from service-level settings (Pydantic `BaseSettings`), plus Compose `environment:` entries.
+
+Common variables used across services:
+- `ENV`
+- `CORS_ORIGINS`
+- `REDIS_URL`
+
+Service-specific highlights:
+- API Gateway: `GRAPH_SERVICE_URL`, `WORKFLOW_SERVICE_URL`, `SEARCH_SERVICE_URL`, `JWT_SECRET_KEY`, `JWT_ALGORITHM`.
+- Graph Service: `JANUSGRAPH_URL`, `MAX_INTRO_PATH_HOPS`, `MIN_TRUST_SCORE`, `KAFKA_BOOTSTRAP_SERVERS`.
+- Workflow Service: `MONGODB_URL`, `MONGODB_DB_NAME`, `KAFKA_BOOTSTRAP_SERVERS`, email/push settings.
+- Search Service: `ELASTICSEARCH_URL`, `MONGODB_URL` (present), indexing/ranking.
+
+### Networking between services
+- All containers are attached to the `trustgraph-network` Docker bridge network.
+- Services reach each other via service DNS names (e.g., `http://graph-service:8001`).
+- External access uses mapped ports:
+  - API Gateway: `8000`
+  - Graph Service: `8001`
+  - Workflow Service: `8002`
+  - Search Service: `8003`
+  - JanusGraph: `8182`
+  - MongoDB: `27017`
+  - Elasticsearch: `9200`
+  - Redis: `6379`
+  - Redpanda: `9092` (outside) / `29092` (inside)
+
+### Volumes and data persistence
+Compose defines named volumes for persistence:
+- `cassandra_data`, `mongodb_data`, `elasticsearch_data`, `redis_data`, `redpanda_data`
+
+Operational note:
+- `stop.ps1` optionally runs `docker-compose down -v` to delete volumes (full data wipe).
+
+### Step-by-step local setup (high level)
+1. Create root `.env` (see `SETUP_GUIDE.md` for a complete template).
+2. Run `docker-compose up -d`.
+3. Wait for health checks (2–3 minutes).
+4. Seed sample graph data: `python backend\scripts\seed_data.py`.
+5. Start optional Kafka consumers (3 terminals) for real-time indexing and trust updates.
+6. Run Flutter app.
+
+---
+
+## 5. Installation Guide (Step-by-Step)
+
+### Prerequisites
+- Docker Desktop
+- Python 3.11+
+- Flutter SDK 3.x (for frontend)
+- Git (optional)
+
+### Clone repo
+If you’re working from GitHub:
+- `git clone <repo-url>`
+- `cd startupConnect_draft`
+
+### Configure environment variables
+- Create a `.env` file at the project root (template provided in `SETUP_GUIDE.md`).
+- Key values to set for development:
+  - `JWT_SECRET_KEY` (change from defaults)
+  - `KAFKA_BOOTSTRAP_SERVERS=localhost:9092` (for host-based consumers)
+
+### Run the system locally
+- Start backend + infra:
+  - `docker-compose up -d`
+- Wait ~60 seconds (or until healthy in `docker-compose ps`).
+- Seed data:
+  - `python backend\scripts\seed_data.py`
+
+### Verify services are running
+- API docs:
+  - http://localhost:8000/docs
+  - http://localhost:8001/docs
+  - http://localhost:8002/docs
+  - http://localhost:8003/docs
+- Health endpoints:
+  - http://localhost:8000/health
+  - http://localhost:8001/health
+  - http://localhost:8002/health
+  - http://localhost:8003/health
+
+### Troubleshooting common issues
+- **Elasticsearch fails at startup**: ensure `vm.max_map_count` is available (Compose sets it). On Windows, ensure Docker has enough memory.
+- **JanusGraph not healthy**: Cassandra/Elasticsearch must be healthy first; check logs: `docker-compose logs -f janusgraph`.
+- **Kafka/Redpanda healthcheck fails**: check `docker-compose logs -f redpanda`.
+- **Seed script fails**: services may not be ready; wait and rerun.
+
+---
+
+## 6. Service Documentation (IMPORTANT)
+
+> This section covers each major service/module in the repository.
+
+### 6.1 backend/api-gateway
+
+**Purpose of the service**
+- Entry point for the client.
+- Authentication endpoints (register/login/refresh/me).
+- Proxies a limited set of routes to Graph/Workflow/Search services.
+
+**Internal architecture**
+- FastAPI app with:
+  - CORS middleware
+  - Auth router (`/api/v1/auth/*`)
+  - An `httpx.AsyncClient` used for service-to-service calls
+
+**Key files and folders explained**
+- `app/main.py`: FastAPI app + proxy endpoints + aggregated health.
+- `app/api/auth.py`: auth endpoints and JWT issuance.
+- `app/core/config.py`: settings (service URLs, Redis, Mongo, JWT, CORS).
+
+**How it connects to other services**
+- HTTP calls to:
+  - Graph Service: user creation, user fetch, trusts edge, path discovery.
+  - Workflow Service: intro creation, intro fetch.
+  - Search Service: user search.
+- Kafka producer in auth module publishes to `user-events` (if Kafka is configured).
+
+**Environment variables used**
+- `GRAPH_SERVICE_URL`, `WORKFLOW_SERVICE_URL`, `SEARCH_SERVICE_URL`
+- `REDIS_URL`, `MONGODB_URL`
+- `JWT_SECRET_KEY`, `JWT_ALGORITHM`
+- `CORS_ORIGINS`
+
+**How to run the service independently**
+- With Docker Compose: `docker-compose up -d api-gateway`
+- Locally (manual): install dependencies from `backend/api-gateway/requirements.txt`, then run with uvicorn on port 8000.
+
+
+### 6.2 backend/graph-service
+
+**Purpose of the service**
+- Owns graph-based operations: vertices, edges, trust metrics, path discovery.
+
+**Internal architecture**
+- FastAPI app with a lifespan hook that connects to JanusGraph.
+- `GraphClient` provides a Gremlin traversal source.
+- Service layer:
+  - `VertexService`: create/get vertices.
+  - `EdgeService`: create/update trust edges and related edge operations.
+  - `PathDiscoveryService`: traverses `TRUSTS` edges, scores and ranks intro paths.
+  - `TrustScoringService`: reputation updates and trust boosts.
+
+**Key files and folders explained**
+- `app/main.py`: routing + JanusGraph connection lifecycle.
+- `app/core/config.py`: `JANUSGRAPH_URL`, hop limits, min trust score, Kafka settings.
+- `app/core/graph_client.py`: Gremlin connection wrapper.
+- `app/api/vertices.py`: vertex endpoints.
+- `app/api/edges.py`: trust edge endpoints.
+- `app/api/paths.py`: path discovery endpoint.
+- `app/schemas/*`: Pydantic models for vertices/edges/paths.
+- `app/consumers/trust_update_consumer.py`: Kafka consumer for trust updates.
+
+**How it connects to other services**
+- JanusGraph (Gremlin WebSocket) for reads/writes.
+- Redis (configured) for caching (integration framework present).
+- Kafka consumer listens to `intro-events` and `graph-events`.
+
+**Environment variables used**
+- `JANUSGRAPH_URL`, `JANUSGRAPH_TRAVERSAL_SOURCE`
+- `REDIS_URL`, `CACHE_TTL`, `PATH_CACHE_TTL`
+- `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC_TRUST_UPDATES`, `KAFKA_TOPIC_INTRO_EVENTS`
+- `MAX_INTRO_PATH_HOPS`, `MIN_TRUST_SCORE`
+- `CORS_ORIGINS`
+
+**How to run the service independently**
+- With Docker Compose: `docker-compose up -d graph-service janusgraph`
+- Locally:
+  - Ensure JanusGraph is reachable at `JANUSGRAPH_URL`.
+  - Run uvicorn on port 8001.
+
+
+### 6.3 backend/workflow-service
+
+**Purpose of the service**
+- Manages the intro request “approval chain” workflow as a persistent state machine.
+
+**Internal architecture**
+- FastAPI app connects to MongoDB during startup.
+- Stores intro requests in `intro_requests` collection.
+- API endpoints:
+  - Create intro
+  - Fetch intro
+  - Approve/decline intro
+- Notification service framework supports email + push.
+- Kafka producer emits events; Kafka consumer (optional) reacts to events.
+
+**Key files and folders explained**
+- `app/main.py`: Mongo connection lifecycle.
+- `app/core/config.py`: Mongo, Kafka, and notification configuration.
+- `app/api/intros.py`: workflow endpoints.
+- `app/schemas/intro_schemas.py`: intro request models and statuses.
+- `app/services/notification_service.py`: email/push skeleton.
+- `app/consumers/intro_event_consumer.py`: Kafka consumer for intro notifications.
+
+**How it connects to other services**
+- MongoDB for workflow persistence.
+- Kafka for emitting/consuming intro events.
+- Email/Push: currently development-mode; production requires SMTP/FCM configuration.
+
+**Environment variables used**
+- `MONGODB_URL`, `MONGODB_DB_NAME`
+- `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_TOPIC_INTRO_EVENTS`
+- `EMAIL_ENABLED`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_TLS`
+- `PUSH_ENABLED`, `FCM_SERVER_KEY`
+- `WEB_APP_URL`, `MOBILE_APP_URL_SCHEME`
+- `CORS_ORIGINS`
+
+**How to run the service independently**
+- With Docker Compose: `docker-compose up -d workflow-service mongodb`
+- Locally:
+  - Ensure MongoDB is reachable at `MONGODB_URL`.
+  - Run uvicorn on port 8002.
+
+
+### 6.4 backend/search-service
+
+**Purpose of the service**
+- Provides full-text search, filtering, and suggestions across entities.
+
+**Internal architecture**
+- FastAPI app connects to Elasticsearch at startup and initializes indices.
+- Core components:
+  - `ElasticsearchClient`: connects and ensures index mappings exist.
+  - `SearchService`: builds ES queries for users/startups.
+  - `IndexerService`: indexes docs (direct endpoint calls or from events).
+  - `RankingService`: optional reranking by graph proximity (calls Graph Service).
+  - `user_indexer_consumer.py`: Kafka consumer for indexing user/startup events.
+
+**Key files and folders explained**
+- `app/main.py`: startup connection + routers.
+- `app/core/elasticsearch_client.py`: mappings and ES operations.
+- `app/api/search.py`: search endpoints.
+- `app/services/search_service.py`: query building and response formatting.
+- `app/services/indexer.py`: index document formatting.
+- `app/services/ranking.py`: graph-aware scoring.
+
+**How it connects to other services**
+- Elasticsearch for indexing/search.
+- (Optional) Graph Service for reranking.
+- Kafka consumer reads `user-events` and `startup-events`.
+
+**Environment variables used**
+- `ELASTICSEARCH_URL`
+- `MONGODB_URL` (present, not required for basic search)
+- `REDIS_URL`
+- `CORS_ORIGINS`
+
+**How to run the service independently**
+- With Docker Compose: `docker-compose up -d search-service elasticsearch`
+- Locally:
+  - Ensure Elasticsearch reachable.
+  - Run uvicorn on port 8003.
+
+
+### 6.5 backend/shared
+
+**Purpose of the module**
+Provides shared cross-service utilities.
+
+**Internal architecture**
+- `auth/`: JWT handler + FastAPI dependencies (`get_current_user`, `require_roles`).
+- `cache/`: Redis wrapper with JSON serialization.
+- `messaging/`: Kafka producer and consumer wrappers.
+- `utils/`: logging/validators (project scaffolding).
+
+**Key files and folders explained**
+- `auth/jwt_handler.py`: creates/decodes access/refresh tokens.
+- `auth/dependencies.py`: bearer token validation and role checks.
+- `cache/redis_client.py`: typed cache operations.
+- `messaging/kafka_producer.py`: standard event envelope.
+- `messaging/kafka_consumer.py`: handler registry + consume loop.
+
+**How it connects to other services**
+- Used as an importable library by each microservice.
+
+**Environment variables used**
+- `JWT_SECRET_KEY` primarily (JWT handler reads from env).
+
+**How to run independently**
+- Not a runnable service; it is a library module.
+
+
+### 6.6 backend/scripts
+
+**Purpose of the module**
+- Bootstrapping and developer utilities.
+
+**Internal architecture**
+- `mongo-init.js`: initializes Mongo collections and indices.
+- `seed_data.py`: seeds JanusGraph with sample users/startups and trust edges.
+- `test_connections.py`: smoke test for service connectivity.
+
+**How it connects to other services**
+- Seed script connects to JanusGraph (Gremlin) on localhost.
+- Mongo init is executed by MongoDB container automatically on first run.
+
+**How to run independently**
+- From repo root:
+  - `python backend\scripts\seed_data.py`
+  - `python backend\scripts\test_connections.py`
+
+
+### 6.7 frontend/trustgraph_app
+
+**Purpose of the module**
+- User-facing client application for authentication, search, and intro workflows.
+
+**Internal architecture**
+- Flutter app with:
+  - HTTP client (Dio) + interceptors for JWT injection and refresh handling.
+  - Repository pattern: Auth/User/Intro/Search repositories.
+  - Feature-first folder structure (`features/auth`, `features/search`, `features/intros`).
+
+**Key files and folders explained**
+- `pubspec.yaml`: dependencies (provider, dio, go_router, secure storage, graph visualization).
+- `lib/data/providers/api_client.dart`: API client and token lifecycle.
+- `lib/data/repositories/*`: business-level API wrappers.
+- `lib/features/*`: UI screens and feature modules.
+
+**How it connects to other services**
+- Calls the API Gateway as the backend base URL (development default: `http://localhost:8000`).
+
+**Environment variables used**
+- Flutter typically uses compile-time configuration; the app expects a base URL configured in its config files.
+
+**How to run independently**
+- `flutter pub get`
+- `flutter run -d chrome` (or your device)
+
+---
+
+## 7. API Documentation
+
+> The system uses FastAPI, so each service also exposes interactive OpenAPI docs at `/docs`.
+
+### Authentication (API Gateway)
+Base path: `/api/v1/auth`
+
+- `POST /api/v1/auth/register`
+  - Purpose: create a user in the graph and return JWTs.
+  - Request example (JSON):
+    - `name`, `email`, `password`, `role_primary`, optional `domain_tags`, `geography`
+  - Response example:
+    - `access_token`, `refresh_token`, `token_type`, `user_id`
+
+- `POST /api/v1/auth/login`
+  - Purpose: validate credentials and return JWTs.
+
+- `POST /api/v1/auth/refresh`
+  - Purpose: exchange refresh token for a new access token.
+  - Note: current implementation expects `refresh_token` as a query/body value depending on client; standardize during hardening.
+
+- `GET /api/v1/auth/me`
+  - Purpose: return current user profile.
+  - Note: current implementation contains a placeholder dependency and should be wired to `backend/shared/auth/dependencies.py`.
+
+### API Gateway proxy endpoints
+- `GET /health` (aggregates downstream health)
+- `POST /api/v1/users` → Graph Service create user
+- `GET /api/v1/users/{user_id}` → Graph Service get user
+- `POST /api/v1/trusts` → Graph Service create TRUSTS edge
+- `POST /api/v1/paths/discover` → Graph Service path discovery
+- `POST /api/v1/intros` → Workflow Service create intro request
+- `GET /api/v1/intros/{intro_id}` → Workflow Service fetch intro
+- `GET /api/v1/search/users?q=...&limit=...` → Search Service user search
+
+### Graph Service endpoints
+Base path: `/api/v1`
+
+Health:
+- `GET /health/` → includes a simple JanusGraph query
+- `GET /health/ready`
+
+Vertices:
+- `POST /api/v1/vertices/users`
+- `GET /api/v1/vertices/users/{user_id}`
+- `POST /api/v1/vertices/startups`
+
+Edges:
+- `POST /api/v1/edges/trusts`
+- `PUT /api/v1/edges/trusts/score?from_user_id=...&to_user_id=...&new_score=...`
+- `POST /api/v1/edges/trusts/increment-intros?from_user_id=...&to_user_id=...`
+
+Paths:
+- `POST /api/v1/paths/discover`
+  - Request example:
+    - `founder_id`, `investor_id`, optional `max_paths`, `domain_filter`
+  - Response fields:
+    - list of paths with `hop_count`, `path_score`, `success_probability`, and an `explanation` string.
+
+### Workflow Service endpoints
+Base path: `/api/v1/intros`
+
+- `POST /api/v1/intros`
+  - Creates an intro request document.
+  - Key request fields:
+    - `requester_id`, `founder_id`, `investor_id`, `path_nodes`, `message`, optional `domain`
+
+- `GET /api/v1/intros/{intro_id}`
+
+- `POST /api/v1/intros/approve`
+  - Request fields: `intro_id`, `approver_id`, `action` (`accept|decline`), optional `comment`
+  - Response indicates completion or the next approver.
+
+### Search Service endpoints
+Base path: `/api/v1/search`
+
+- `GET /api/v1/search/users`
+  - Query params: `q` (min length 2), optional `role`, `domain`, `geography`, `limit`, `offset`, optional `current_user_id`.
+
+- `GET /api/v1/search/startups`
+  - Query params: `q`, optional `stage`, `domain`, `geography`, `limit`, `offset`.
+
+- `GET /api/v1/search/autocomplete`
+  - Query params: `q`, `type` (`users|startups`), `limit`.
+
+- `POST /api/v1/search/index/user`
+- `POST /api/v1/search/index/startup`
+
+### Error handling conventions
+- Services use standard HTTP status codes:
+  - `400` for validation and bad requests.
+  - `401` for authentication errors.
+  - `403` for authorization errors.
+  - `404` for missing entities.
+  - `500` for unexpected server errors.
+- Some endpoints return an `error` field in JSON on failure (notably search endpoints).
+
+### Authentication model
+- JWT Bearer tokens.
+- Shared dependency helpers exist in `backend/shared/auth/dependencies.py`.
+- Production hardening to consider:
+  - rotate secrets
+  - shorten access token TTL
+  - use bcrypt/argon2 for password hashing
+
+---
+
+## 8. Database & Storage Documentation
+
+### JanusGraph (Graph DB)
+**Why**: Models trust relationships naturally (nodes + edges) and supports multi-hop traversals for intro paths.
+
+**Stored data**
+- Vertex labels:
+  - `User`
+  - `Startup`
+  - `Organization` (schemas exist; endpoints may be expanded)
+- Edge labels:
+  - `TRUSTS` (directional)
+  - Additional edges exist in the codebase (e.g., `INVESTED_IN`, `MEMBER_OF`, `WORKED_WITH`) but are not fully exposed via Graph Service API routes yet.
+
+**Key properties**
+- `User`: `user_id`, `name`, `role_primary`, `domain_tags`, `reputation_score`, `verification_status`, `created_at`.
+- `TRUSTS`: `trust_score`, `strength_score`, `recency_score`, `interaction_count`, `successful_intros`, `domain_tags`.
+
+**Indexing**
+- JanusGraph is configured to use Elasticsearch as an index backend (see JanusGraph properties in `backend/graph-service/config/*`).
+
+### Cassandra (JanusGraph storage backend)
+- Stores the underlying graph data for JanusGraph.
+- Persisted via Docker volume `cassandra_data`.
+
+### MongoDB (Workflow + document store)
+**Why**: Workflow state is document-like and evolves over time.
+
+**Collections created at init** (see `mongo-init.js`)
+- `users`
+- `intro_requests`
+- `approvals`
+- `posts`
+- `verification_documents`
+
+**Indices**
+- `intro_requests`: indexed by `intro_id`, requester/founder/investor IDs, status, timestamps, and path nodes.
+
+### Elasticsearch (App search)
+**Indices**
+- `users`
+- `startups`
+- `organizations`
+
+**Mapping intent**
+- Text fields for name/description for relevance.
+- Keyword fields for exact filtering (role, geography, tags).
+- Numeric factors (e.g., `reputation_score`) used for ranking boosts.
+
+**How indexing/search works**
+- Write path:
+  - Event-driven via Kafka consumers (preferred for near real-time sync)
+  - Or direct indexing endpoints for ad-hoc sync
+- Read path:
+  - Query is built with multi-match + fuzziness and optionally boosted by `reputation_score`.
+  - Optional reranking uses Graph Service path discovery to compute proximity signals.
+
+### Redis
+- Intended uses:
+  - caching expensive path discovery results
+  - short TTL data like rate limits and session hints
+- Current codebase includes a Redis wrapper; integration depth varies by service.
+
+---
+
+## 9. Event Streaming / Messaging (if present)
+
+### Broker
+- Redpanda is used as a Kafka-compatible broker.
+
+### Event envelope
+Events published by the shared producer follow this structure:
+- `event_type`: string
+- `timestamp`: ISO string
+- `data`: object payload
+
+Example shape:
+- `{ "event_type": "user_created", "timestamp": "...", "data": { ... } }`
+
+### Topics (current)
+- `user-events`
+- `startup-events`
+- `intro-events`
+- `trust-updates`
+- `graph-events` (referenced by consumers)
+
+### Producers
+- API Gateway (auth): publishes `user_created` → `user-events`.
+- Workflow Service: publishes `intro_created` → `intro-events`.
+
+### Consumers
+- Search Service consumer (`user_indexer_consumer.py`):
+  - topics: `user-events`, `startup-events`
+  - handles: `user_created`, `startup_created`, `profile_updated`
+
+- Graph Service consumer (`trust_update_consumer.py`):
+  - topics: `intro-events`, `graph-events`
+  - handles: `intro_completed`, `trust_edge_created`
+
+- Workflow Service consumer (`intro_event_consumer.py`):
+  - topic: `intro-events`
+  - handles: `intro_created`, `intro_approved`, `intro_declined`, `intro_completed`
+
+### Event flow (high level)
+```mermaid
+flowchart TD
+  A[API Gateway\nuser registration] -->|publish user_created| UE[(user-events)]
+  UE -->|consume| SIDX[Search consumer\nindex user]
+  SIDX --> ES[(Elasticsearch users index)]
+
+  W[Workflow Service\ncreate intro] -->|publish intro_created| IE[(intro-events)]
+  IE -->|consume| WN[Workflow consumer\nnotify intermediaries]
+
+  IE -->|consume| GT[Graph consumer\ntrust updates]
+  GT --> J[JanusGraph\nupdate trust/reputation]
+```
+
+---
+
+## 10. Development Guide
+
+### How to add new features
+- Prefer adding capabilities in the owning service:
+  - Graph-based features → Graph Service
+  - Workflow/state features → Workflow Service
+  - Search features → Search Service
+  - Client aggregation/auth → API Gateway
+- For cross-service changes:
+  - define a stable API contract (request/response schema)
+  - or add an event contract (topic + event_type + payload schema)
+
+### Coding standards
+- Python:
+  - keep business logic in `app/services/*`
+  - keep request/response models in `app/schemas/*`
+  - avoid putting non-trivial logic in route handlers
+- API consistency:
+  - use `/api/v1/*` prefixes
+  - return consistent error shapes (documented)
+
+### Project structure guidelines
+- Each backend service follows:
+  - `app/main.py` (FastAPI app)
+  - `app/api/*` (routers)
+  - `app/core/*` (clients/settings)
+  - `app/services/*` (logic)
+  - `app/schemas/*` (Pydantic)
+
+### How to run tests
+- Each service is set up to run `pytest` inside its container (where tests exist).
+- Flutter tests: `flutter test`.
+
+### Debugging tips
+- Use Swagger UI at each service’s `/docs` to validate endpoints.
+- For cross-service issues, start by:
+  - `docker-compose ps`
+  - `docker-compose logs -f <service>`
+- Validate external dependencies:
+  - Elasticsearch: `http://localhost:9200/_cluster/health`
+  - JanusGraph: check `janusgraph` logs and Gremlin websocket availability.
+- If search reranking is slow, disable `current_user_id` in queries to avoid graph calls.
+
+---
+
+## 11. Production Deployment Guide
+
+### Scaling strategy
+- Stateless services (gateway/graph/workflow/search) can scale horizontally behind a load balancer.
+- Ensure sticky-session is not required (JWT-based auth is stateless).
+- Scale data stores independently:
+  - Cassandra and Elasticsearch require careful cluster sizing and tuning.
+  - Redis can become a single hot spot; consider clustering or managed solutions.
+
+### Monitoring and logging
+- Recommended:
+  - centralize logs (ELK/OpenSearch, Loki, or a managed log service)
+  - metrics collection (Prometheus + Grafana)
+  - tracing (OpenTelemetry) for cross-service request flows
+- Minimum health monitoring:
+  - watch `/health` endpoints
+  - alert on Kafka consumer lag
+
+### Security considerations
+- Secrets:
+  - never use default `JWT_SECRET_KEY` in production
+  - store secrets in a vault (e.g., Azure Key Vault, AWS Secrets Manager)
+- Auth:
+  - upgrade password hashing from SHA256 to bcrypt/argon2
+  - implement token revocation strategy if needed
+- Network:
+  - restrict datastore ports from public exposure
+  - enable TLS for internal traffic where applicable
+- Input validation:
+  - enforce stricter schemas and rate limiting at gateway
+
+### Backup and recovery
+- Cassandra:
+  - snapshot strategy + restore procedure rehearsals
+- MongoDB:
+  - periodic dumps or replica set backups
+- Elasticsearch:
+  - snapshot repository configuration
+- Redis:
+  - decide whether it is cache-only or stores critical state; configure AOF/RDB accordingly
+
+---
+
+## 12. FAQ
+
+### Common developer questions
+
+**Q: Which URL should the frontend call?**
+- Intended: API Gateway at `http://localhost:8000`.
+- Note: currently the gateway proxies only a subset of Search endpoints; you may need to extend gateway routes or call Search Service directly for full coverage.
+
+**Q: Where is workflow state stored?**
+- In MongoDB, in the `intro_requests` collection.
+
+**Q: Why do we use both JanusGraph and Elasticsearch?**
+- JanusGraph is the source of truth for relationship traversals.
+- Elasticsearch is optimized for text search and filtering, and also acts as an index backend for JanusGraph.
+
+### Common runtime issues
+
+**Q: Login fails with “user not found by email”.**
+- The API Gateway login flow expects a Graph Service endpoint `GET /api/v1/vertices/users/by-email/{email}`, but the current Graph Service router does not expose it yet.
+
+**Q: `GET /api/v1/auth/me` always returns dummy data or fails.**
+- The endpoint currently uses a placeholder dependency and needs to be wired to the shared JWT dependency (`get_current_user`).
+
+**Q: Notifications crash or don’t send.**
+- Email/push are framework-level; SMTP/FCM must be configured.
+- Some notification calls in workflow modules have mismatched function signatures and should be aligned during stabilization.
+
+**Q: Kafka consumers aren’t receiving events.**
+- Confirm Redpanda is healthy and the bootstrap server matches your runtime:
+  - inside Docker network: `redpanda:29092`
+  - from your host machine: `localhost:9092`
+
+**Q: Elasticsearch index missing.**
+- Search Service creates indices on startup; restart `search-service` after Elasticsearch becomes healthy.
+
+---

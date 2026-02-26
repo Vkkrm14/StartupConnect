@@ -1,0 +1,678 @@
+✅ Clean Feature List (Product-Level)
+🧭 Graph Core Features
+Trust-weighted relationship edges
+
+Multi-role nodes (Founder / Investor / Connector / Startup)
+
+One-way trust edges
+
+Mutual trust → strong connection edge
+
+Edge attributes: trust, strength, recency, intro success rate
+
+Max intro chain length constraint (≤ 4 hops)
+
+Trust decay over time
+
+Dynamic edge weight updates from actions
+
+🔎 Intro Path Discovery Engine
+Investor search by:
+
+name
+
+firm
+
+domain
+
+stage
+
+geography
+
+tags
+
+Best intro path ranking
+
+Multi-hop path scoring
+
+Path explainability (“why this path is recommended”)
+
+Success probability score
+
+Path trust visualization
+
+🤝 Intro Workflow Engine
+Stepwise intro approval chain
+
+Intermediary accept/decline
+
+Conditional forward intro
+
+Investor intro request queue
+
+Auto graph update after intro outcome
+
+Outcome labels:
+
+accepted
+
+responded
+
+meeting scheduled
+
+funded
+
+rejected
+
+👤 Identity & Verification Features
+Founder → startup claim linking
+
+Investor → funded startup linking (visibility controlled)
+
+Startup → founder verification
+
+Role verification workflows
+
+Media/admin startup account linking
+
+🧠 Reputation & Trust Features
+Introducer reliability score
+
+Referral success rate
+
+Trust endorsements
+
+Domain-specific trust tags
+
+Weighted recommendations
+
+Trust cluster detection
+
+📢 Structured Posts & Signals
+Founder post templates:
+
+new startup launch
+
+feature launch
+
+hiring
+
+funding round open
+
+Investor post templates:
+
+thesis areas
+
+seeking startups
+
+portfolio announcement (public / trusted only)
+
+Trust-scoped visibility controls:
+
+public
+
+trusted circle
+
+strong-trust only
+
+🔍 Search & Discovery
+Graph-aware search ranking
+
+Tag & domain search
+
+Startup similarity search
+
+Investor thesis matching
+
+Connector discovery
+
+Ecosystem cluster exploration
+
+📊 Analytics & Insights
+Intro path success rates
+
+Trust network centrality metrics
+
+Ecosystem heat maps
+
+Investor domain clusters
+
+Founder trust growth score
+
+Deal flow quality metrics
+
+🔔 Real-Time Features
+Intro request notifications
+
+Approval chain updates
+
+Investor interest alerts
+
+Trust endorsement alerts
+
+✅ Production Deployment Tech Stack (Industry Grade)
+You already chose a very strong poly-NoSQL base. Here is a fully deployable architecture layered cleanly.
+
+🧱 Core Data Layer
+Graph Layer
+JanusGraph
+
+Cassandra (storage backend)
+
+Gremlin traversal engine
+
+Purpose:
+
+trust graph
+
+intro path traversal
+
+scoring
+
+multi-hop search
+
+Document Layer
+MongoDB
+
+Purpose:
+
+user profiles
+
+intro workflows
+
+posts
+
+verification docs
+
+reputation records
+
+audit logs
+
+Search Layer
+Elasticsearch / OpenSearch
+
+Purpose:
+
+name/tag/domain search
+
+investor discovery
+
+startup discovery
+
+post search
+
+autocomplete
+
+Cache & Real-Time
+Redis
+
+Purpose:
+
+hot graph path cache
+
+trust score cache
+
+rate limiting
+
+queues
+
+notification fanout
+
+⚙️ Backend Services Layer
+Use microservices.
+
+API Layer
+FastAPI (Python) or
+
+NestJS (Node) — very strong for microservices
+
+Graph Service
+Gremlin Server client
+
+Path scoring engine
+
+Trust update engine
+
+Intro Workflow Service
+MongoDB + Redis queue
+
+state machine engine
+
+Trust Scoring Engine
+Python service
+
+batch + streaming updates
+
+edge weight recomputation
+
+Search Service
+Elasticsearch indexers
+
+async ingestion workers
+
+📡 Messaging & Async
+Apache Kafka or Redpanda
+
+Redis Streams (lighter alternative)
+
+Events:
+
+intro completed
+
+trust updated
+
+endorsement added
+
+connection formed
+
+🔐 Auth & Security
+Keycloak (open source IAM)
+
+JWT tokens
+
+Role-based access control
+
+Trust-scope visibility rules
+
+📱 Frontend
+Flutter mobile app
+
+Graph visualization: Flutter + D3-style graph lib or custom canvas
+
+Web admin panel:
+
+Next.js or SvelteKit
+
+🚀 DevOps Stack
+Containers
+Docker
+
+Kubernetes (k3s for small cluster)
+
+CI/CD
+GitHub Actions / GitLab CI
+
+Observability
+Prometheus
+
+Grafana
+
+OpenTelemetry
+
+API Gateway
+Kong / Traefik
+
+📦 Feature → Tech Stack Mapping
+Intro Path Discovery
+JanusGraph
+
+Gremlin
+
+Redis cache
+
+Python scoring service
+
+Trust Weight Engine
+Kafka events
+
+Python worker
+
+Cassandra edge updates
+
+Search & Discovery
+Elasticsearch
+
+Mongo index sync workers
+
+Structured Posts
+MongoDB
+
+Elasticsearch index
+
+Redis feed cache
+
+Reputation System
+MongoDB
+
+Graph edge attributes
+
+Batch analytics workers
+
+Verification System
+MongoDB
+
+Object storage (MinIO / S3 compatible)
+
+Notifications
+Redis pub/sub
+
+Kafka events
+
+Firebase Cloud Messaging (mobile push)
+Here’s a clean graph schema design for StartupConnect.
+
+🧩 Vertex Types (Nodes)
+These are the core entities in the ecosystem graph.
+
+1️⃣ User
+Represents any individual on the platform.
+
+Label: User
+
+Properties
+
+user_id (PK)
+
+name
+
+role_primary (founder / investor / operator)
+
+roles_secondary (array)
+
+domain_tags (AI, fintech, SaaS…)
+
+geography
+
+experience_years
+
+reputation_score
+
+verification_status
+
+created_at
+
+👉 One person can have multiple roles.
+
+2️⃣ Startup
+Represents companies.
+
+Label: Startup
+
+Properties
+
+startup_id (PK)
+
+name
+
+domain
+
+stage (idea / MVP / seed / seriesA…)
+
+geography
+
+founded_year
+
+funding_status
+
+employee_count
+
+visibility_level (public / trusted_only)
+
+3️⃣ Organization
+Accelerators, VC firms, incubators, scout orgs.
+
+Label: Organization
+
+Properties
+
+org_id (PK)
+
+name
+
+type (VC / accelerator / incubator / angel network / law firm)
+
+geography
+
+domains
+
+website
+
+4️⃣ Post (Optional but useful node)
+Structured ecosystem signals.
+
+Label: Post
+
+Properties
+
+post_id
+
+post_type (fundraising / hiring / launch / thesis)
+
+visibility_scope
+
+created_at
+
+🔗 Edge Types (Relationships)
+This is the most important part of your system.
+
+All edges should include shared metadata:
+
+Common Edge Properties
+
+trust_score (0–1)
+
+strength_score (0–1)
+
+recency_score (0–1)
+
+interaction_count
+
+successful_intros
+
+last_interaction_at
+
+created_at
+
+👥 USER ↔ USER EDGES
+1️⃣ TRUSTS
+One‑way trust relationship.
+
+Edge: TRUSTS
+User ➜ User
+
+Meaning:
+
+“I trust this person to make introductions.”
+
+Properties:
+
+trust_score
+
+endorsement_count
+
+domain_tags
+
+If mutual → becomes strong connection in ranking.
+
+2️⃣ INTRODUCED
+Tracks real intro events.
+
+Edge: INTRODUCED
+User ➜ User
+
+Properties:
+
+intro_count
+
+success_rate
+
+last_intro_at
+
+Feeds trust scoring.
+
+3️⃣ WORKED_WITH
+Professional collaboration.
+
+Edge: WORKED_WITH
+
+Properties:
+
+company_name
+
+duration_months
+
+collaboration_strength
+
+4️⃣ ENDORSED
+Skill/domain endorsement.
+
+Edge: ENDORSED
+User ➜ User
+
+Properties:
+
+domain_tag
+
+weight
+
+👤 USER ↔ STARTUP EDGES
+5️⃣ FOUNDED
+Founder relationship.
+
+Edge: FOUNDED
+User ➜ Startup
+
+Properties:
+
+role (cofounder / founder)
+
+start_date
+
+active (bool)
+
+6️⃣ WORKS_AT
+Employment.
+
+Edge: WORKS_AT
+User ➜ Startup
+
+Properties:
+
+role_title
+
+start_date
+
+end_date
+
+7️⃣ ADVISOR_TO
+Advisor / mentor.
+
+Edge: ADVISOR_TO
+
+Properties:
+
+advisory_strength
+
+active
+
+💰 USER ↔ STARTUP (Investor Relationships)
+8️⃣ INVESTED_IN
+Investor → startup.
+
+Edge: INVESTED_IN
+User ➜ Startup
+
+Properties:
+
+round (angel/seed/seriesA…)
+
+amount_range
+
+year
+
+visibility (public / trusted_only)
+
+⚠️ Important feature from your spec.
+
+9️⃣ INTERESTED_IN
+Soft investor interest signal.
+
+Edge: INTERESTED_IN
+User ➜ Startup
+
+Properties:
+
+interest_level
+
+created_at
+
+🏢 USER ↔ ORGANIZATION EDGES
+🔟 MEMBER_OF
+User part of VC firm / accelerator.
+
+Edge: MEMBER_OF
+
+Properties:
+
+role (partner / scout / associate)
+
+start_date
+
+1️⃣1️⃣ AFFILIATED_WITH
+Loose association.
+
+Mentor / speaker / alum.
+
+📢 POST RELATIONSHIPS
+1️⃣2️⃣ CREATED
+User ➜ Post
+
+1️⃣3️⃣ ABOUT
+Post ➜ Startup / Organization
+
+1️⃣4️⃣ INTERESTED_IN_POST
+User ➜ Post
+
+Investor expresses interest.
+
+⭐ SPECIAL EDGE (CORE FEATURE)
+1️⃣5️⃣ INTRO_PATH
+Created only during intro workflow.
+
+User ➜ User chain edges created temporarily or stored historically.
+
+Properties:
+
+path_score
+
+hop_count
+
+status (pending / completed / failed)
+
+This becomes training data for trust scoring.
+
+🎯 How This Supports Your Core Logic
+Your intro path query becomes:
+
+Founder → TRUSTS → TRUSTS → MEMBER_OF → INVESTOR
+Founder → TRUSTS → WORKED_WITH → INVESTOR
+Founder → TRUSTS → ADVISOR_TO → INVESTOR
+
+Graph traversal depth: max 4 hops
+
+🧠 Minimal Vertex Set (for MVP)
+If you want lean MVP:
+
+Vertices:
+
+User
+
+Startup
+
+Organization
+
+Edges:
+
+TRUSTS ⭐ core
+
+FOUNDED
+
+INVESTED_IN
+
+MEMBER_OF
+
+WORKED_WITH
+
+INTRODUCED ⭐ feedback loop
+
+That alone can power v1 intro discovery.
