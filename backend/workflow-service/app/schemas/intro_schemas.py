@@ -15,7 +15,7 @@ class IntroRequestCreate(BaseModel):
     founder_id: str
     investor_id: str
     path_nodes: List[str]  # User IDs in the intro path
-    message: str = Field(..., min_length=10, max_length=1000)
+    message: str = Field(default='', max_length=1000)
     domain: Optional[str] = None
 
 class IntroRequestResponse(BaseModel):
@@ -29,6 +29,11 @@ class IntroRequestResponse(BaseModel):
     message: str
     created_at: datetime
     updated_at: datetime
+    # Resolved names (optional - populated when available)
+    requester_name: Optional[str] = None
+    founder_name: Optional[str] = None
+    investor_name: Optional[str] = None
+    path_node_names: Optional[List[str]] = None
 
 class ApprovalAction(BaseModel):
     intro_id: str

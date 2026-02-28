@@ -27,8 +27,8 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -37,7 +37,7 @@ app.add_middleware(
 app.include_router(auth.router)
 
 # HTTP client for service communication
-http_client = httpx.AsyncClient(timeout=30.0)
+http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
 @app.get("/")
 async def root():
@@ -143,7 +143,7 @@ async def create_intro_request(request: Request):
     """Proxy to workflow service - create intro request"""
     body = await request.json()
     response = await http_client.post(
-        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros",
+        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/",
         json=body
     )
     return response.json()

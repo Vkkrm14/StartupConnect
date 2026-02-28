@@ -152,7 +152,7 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
                                     const SizedBox(width: 8),
                                     Expanded(
                                       child: Text(
-                                        'To: ${request.investorId}',
+                                        'To: ${request.investorName ?? request.investorId}',
                                         style: Theme.of(context).textTheme.titleMedium,
                                       ),
                                     ),

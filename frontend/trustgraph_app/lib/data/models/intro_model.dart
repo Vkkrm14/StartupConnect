@@ -9,6 +9,11 @@ class IntroModel {
   final String message;
   final DateTime createdAt;
   final DateTime updatedAt;
+  // Resolved display names
+  final String? requesterName;
+  final String? founderName;
+  final String? investorName;
+  final List<String>? pathNodeNames;
   
   IntroModel({
     required this.introId,
@@ -21,6 +26,10 @@ class IntroModel {
     required this.message,
     required this.createdAt,
     required this.updatedAt,
+    this.requesterName,
+    this.founderName,
+    this.investorName,
+    this.pathNodeNames,
   });
   
   factory IntroModel.fromJson(Map<String, dynamic> json) {
@@ -32,9 +41,15 @@ class IntroModel {
       pathNodes: List<String>.from(json['path_nodes']),
       currentNodeIndex: json['current_node_index'] ?? 0,
       status: json['status'] ?? 'pending',
-      message: json['message'],
+      message: json['message'] ?? '',
       createdAt: DateTime.parse(json['created_at']),
       updatedAt: DateTime.parse(json['updated_at']),
+      requesterName: json['requester_name'],
+      founderName: json['founder_name'],
+      investorName: json['investor_name'],
+      pathNodeNames: json['path_node_names'] != null
+          ? List<String>.from(json['path_node_names'])
+          : null,
     );
   }
 }

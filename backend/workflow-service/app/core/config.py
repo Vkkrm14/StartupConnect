@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     PUSH_ENABLED: bool = False  # Set to True when FCM is configured
     FCM_SERVER_KEY: str = ""  # Firebase Cloud Messaging server key
     
+    # Internal service URLs
+    GRAPH_SERVICE_URL: str = "http://graph-service:8001"
+
     # App URLs
     WEB_APP_URL: str = "http://localhost:3000"
     MOBILE_APP_URL_SCHEME: str = "trustgraph://"

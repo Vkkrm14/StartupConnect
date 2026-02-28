@@ -117,7 +117,7 @@ class _PendingIntrosScreenState extends State<PendingIntrosScreen> {
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  'From: ${intro.requesterId}',
+                                  'From: ${intro.requesterName ?? intro.requesterId}',
                                   style: Theme.of(context).textTheme.bodyMedium,
                                 ),
                                 if (intro.message.isNotEmpty) ...[

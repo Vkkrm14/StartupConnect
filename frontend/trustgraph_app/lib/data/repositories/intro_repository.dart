@@ -44,9 +44,10 @@ class IntroRepository {
       final response = await _apiClient.post(
         '/api/v1/intros',
         data: {
+          'requester_id': founderId,
           'founder_id': founderId,
           'investor_id': investorId,
-          'path_user_ids': pathUserIds,
+          'path_nodes': pathUserIds,
           'message': message ?? '',
         },
       );

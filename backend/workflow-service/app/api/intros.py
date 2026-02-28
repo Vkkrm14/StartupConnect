@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from datetime import datetime
 import uuid
 import logging
+import httpx
 import sys
 sys.path.append("/app/shared")
 from messaging.kafka_producer import KafkaEventProducer
@@ -17,6 +18,26 @@ from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# ─── Name resolution helper ───────────────────────────────────────────────────
+async def resolve_names(user_ids: list) -> dict:
+    """Fetch display names for a list of user IDs from graph-service.
+    Returns {user_id: name}. Missing IDs get a shortened ID as fallback."""
+    names = {}
+    unique_ids = list(set(uid for uid in user_ids if uid))
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for uid in unique_ids:
+            try:
+                r = await client.get(f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users/{uid}")
+                if r.status_code == 200:
+                    data = r.json()
+                    names[uid] = data.get("name") or data.get("username") or uid[:8]
+                else:
+                    names[uid] = uid[:8]
+            except Exception:
+                names[uid] = uid[:8]
+    return names
+# ──────────────────────────────────────────────────────────────────────────────
 
 # Initialize Kafka producer
 kafka_producer = None
@@ -95,6 +116,9 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
             except Exception as e:
                 logger.warning(f"Failed to send notification: {e}")
         
+        all_ids = list(set([intro_data.requester_id, intro_data.founder_id, intro_data.investor_id] + intro_data.path_nodes))
+        names = await resolve_names(all_ids)
+
         return IntroRequestResponse(
             intro_id=intro_id,
             requester_id=intro_data.requester_id,
@@ -105,7 +129,11 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
             status=IntroStatus.PENDING,
             message=intro_data.message,
             created_at=now,
-            updated_at=now
+            updated_at=now,
+            requester_name=names.get(intro_data.requester_id),
+            founder_name=names.get(intro_data.founder_id),
+            investor_name=names.get(intro_data.investor_id),
+            path_node_names=[names.get(uid, uid[:8]) for uid in intro_data.path_nodes],
         )
     except Exception as e:
         logger.error(f"❌ Failed to create intro request: {str(e)}")
@@ -127,19 +155,30 @@ async def get_user_intro_requests(request: Request, user_id: str):
         ]
     }).sort("created_at", -1).to_list(length=100)
 
+    # Collect all unique user IDs across docs for a single batch resolve
+    all_ids = set()
+    for doc in docs:
+        all_ids.update([doc["requester_id"], doc["founder_id"], doc["investor_id"]] + doc.get("path_nodes", []))
+    names = await resolve_names(list(all_ids))
+
     result = []
     for doc in docs:
+        path_nodes = doc.get("path_nodes", [])
         result.append({
             "intro_id": doc["intro_id"],
             "requester_id": doc["requester_id"],
             "founder_id": doc["founder_id"],
             "investor_id": doc["investor_id"],
-            "path_nodes": doc.get("path_nodes", []),
+            "path_nodes": path_nodes,
             "current_node_index": doc.get("current_node_index", 0),
             "status": doc["status"],
             "message": doc.get("message", ""),
             "created_at": doc["created_at"].isoformat() if hasattr(doc.get("created_at"), "isoformat") else str(doc.get("created_at", "")),
-            "updated_at": doc["updated_at"].isoformat() if hasattr(doc.get("updated_at"), "isoformat") else str(doc.get("updated_at", ""))
+            "updated_at": doc["updated_at"].isoformat() if hasattr(doc.get("updated_at"), "isoformat") else str(doc.get("updated_at", "")),
+            "requester_name": names.get(doc["requester_id"]),
+            "founder_name": names.get(doc["founder_id"]),
+            "investor_name": names.get(doc["investor_id"]),
+            "path_node_names": [names.get(uid, uid[:8]) for uid in path_nodes],
         })
 
     return {"intro_requests": result}
@@ -154,6 +193,12 @@ async def get_pending_approvals(request: Request, user_id: str):
         "path_nodes": user_id,
         "status": {"$in": [IntroStatus.PENDING.value, IntroStatus.APPROVED.value]}
     }).sort("created_at", -1).to_list(length=100)
+
+    # Collect all unique IDs for batch resolution
+    all_ids = set()
+    for doc in docs:
+        all_ids.update([doc["requester_id"], doc["founder_id"], doc["investor_id"]] + doc.get("path_nodes", []))
+    names = await resolve_names(list(all_ids))
 
     # Filter to only those where user_id is the current node awaiting action
     result = []
@@ -171,7 +216,11 @@ async def get_pending_approvals(request: Request, user_id: str):
                 "status": doc["status"],
                 "message": doc.get("message", ""),
                 "created_at": doc["created_at"].isoformat() if hasattr(doc.get("created_at"), "isoformat") else str(doc.get("created_at", "")),
-                "updated_at": doc["updated_at"].isoformat() if hasattr(doc.get("updated_at"), "isoformat") else str(doc.get("updated_at", ""))
+                "updated_at": doc["updated_at"].isoformat() if hasattr(doc.get("updated_at"), "isoformat") else str(doc.get("updated_at", "")),
+                "requester_name": names.get(doc["requester_id"]),
+                "founder_name": names.get(doc["founder_id"]),
+                "investor_name": names.get(doc["investor_id"]),
+                "path_node_names": [names.get(uid, uid[:8]) for uid in path_nodes],
             })
 
     return {"pending_intros": result}
@@ -260,17 +309,25 @@ async def get_intro_request(request: Request, intro_id: str):
             detail=f"Intro request {intro_id} not found"
         )
     
+    path_nodes = intro_doc["path_nodes"]
+    all_ids = list(set([intro_doc["requester_id"], intro_doc["founder_id"], intro_doc["investor_id"]] + path_nodes))
+    names = await resolve_names(all_ids)
+
     return IntroRequestResponse(
         intro_id=intro_doc["intro_id"],
         requester_id=intro_doc["requester_id"],
         founder_id=intro_doc["founder_id"],
         investor_id=intro_doc["investor_id"],
-        path_nodes=intro_doc["path_nodes"],
+        path_nodes=path_nodes,
         current_node_index=intro_doc["current_node_index"],
         status=intro_doc["status"],
         message=intro_doc["message"],
         created_at=intro_doc["created_at"],
-        updated_at=intro_doc["updated_at"]
+        updated_at=intro_doc["updated_at"],
+        requester_name=names.get(intro_doc["requester_id"]),
+        founder_name=names.get(intro_doc["founder_id"]),
+        investor_name=names.get(intro_doc["investor_id"]),
+        path_node_names=[names.get(uid, uid[:8]) for uid in path_nodes],
     )
 
 @router.post("/approve")

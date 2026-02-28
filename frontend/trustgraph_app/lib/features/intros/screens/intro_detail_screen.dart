@@ -272,7 +272,9 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      node,
+                      _intro!.pathNodeNames != null && index < _intro!.pathNodeNames!.length
+                          ? _intro!.pathNodeNames![index]
+                          : node,
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                   ),
