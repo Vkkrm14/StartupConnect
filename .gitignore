@@ -58,7 +58,6 @@ frontend/.flutter-plugins-dependencies
 frontend/.packages
 frontend/.pub-cache/
 frontend/.pub/
-frontend/build/
 frontend/ios/Flutter/flutter_framework.TargetSupport.xcframework
 frontend/ios/Flutter/App.framework
 frontend/ios/Flutter/Flutter.framework
