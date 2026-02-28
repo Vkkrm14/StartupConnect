@@ -239,45 +239,84 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
   }
 
   Widget _buildPathVisualization() {
+    final currentIndex = _intro!.currentNodeIndex;
+    final overallStatus = _intro!.status.toLowerCase();
+
     return Column(
       children: List.generate(_intro!.pathNodes.length, (index) {
         final node = _intro!.pathNodes[index];
         final isLast = index == _intro!.pathNodes.length - 1;
+        final displayName = _intro!.pathNodeNames != null && index < _intro!.pathNodeNames!.length
+            ? _intro!.pathNodeNames![index]
+            : node;
+
+        // Determine node color
+        Color nodeColor;
+        Color borderColor;
+        Color avatarColor;
+        IconData? statusIcon;
+
+        if (index == 0) {
+          // Requester — always green (they initiated)
+          nodeColor = Colors.green.shade400.withOpacity(0.2);
+          borderColor = Colors.green;
+          avatarColor = Colors.green;
+          statusIcon = Icons.check;
+        } else if (index < currentIndex) {
+          // Already approved
+          nodeColor = Colors.green.shade500.withOpacity(0.2);
+          borderColor = Colors.green;
+          avatarColor = Colors.green;
+          statusIcon = Icons.check;
+        } else if (index == currentIndex && overallStatus == 'declined') {
+          // This node declined
+          nodeColor = Colors.red.shade500.withOpacity(0.2);
+          borderColor = Colors.red;
+          avatarColor = Colors.red;
+          statusIcon = Icons.close;
+        } else if (index == currentIndex) {
+          // Awaiting this node's approval
+          nodeColor = Colors.amber.shade500.withOpacity(0.2);
+          borderColor = Colors.amber.shade700;
+          avatarColor = Colors.amber.shade700;
+          statusIcon = Icons.hourglass_empty;
+        } else {
+          // Future node — not yet reached
+          nodeColor = Colors.grey.shade500.withOpacity(0.2);
+          borderColor = Colors.grey.shade300;
+          avatarColor = Colors.grey;
+          statusIcon = null;
+        }
 
         return Column(
           children: [
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: index == _intro!.currentNodeIndex
-                    ? Theme.of(context).colorScheme.primaryContainer
-                    : Colors.grey[100],
+                color: nodeColor,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: index == _intro!.currentNodeIndex
-                      ? Theme.of(context).colorScheme.primary
-                      : Colors.grey[300]!,
-                  width: 2,
-                ),
+                border: Border.all(color: borderColor, width: 2),
               ),
               child: Row(
                 children: [
                   CircleAvatar(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    backgroundColor: avatarColor,
                     child: Text(
                       '${index + 1}',
-                      style: const TextStyle(color: Colors.white),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      _intro!.pathNodeNames != null && index < _intro!.pathNodeNames!.length
-                          ? _intro!.pathNodeNames![index]
-                          : node,
-                      style: Theme.of(context).textTheme.bodyMedium,
+                      displayName,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: index == currentIndex ? FontWeight.bold : null,
+                      ),
                     ),
                   ),
+                  if (statusIcon != null)
+                    Icon(statusIcon, color: borderColor, size: 20),
                 ],
               ),
             ),

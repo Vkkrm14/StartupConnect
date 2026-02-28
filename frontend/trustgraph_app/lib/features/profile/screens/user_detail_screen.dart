@@ -154,7 +154,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                         children: _user!.domainTags
                             .map((tag) => Chip(
                                   label: Text(tag),
-                                  backgroundColor: Colors.blue[50],
+                                  backgroundColor: Colors.blue[300],
                                 ))
                             .toList(),
                       ),

@@ -179,7 +179,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           children: _currentUser!.domainTags
                               .map((tag) => Chip(
                                     label: Text(tag),
-                                    backgroundColor: Colors.blue[50],
+                                    backgroundColor: Colors.blue,
                                   ))
                               .toList(),
                         ),

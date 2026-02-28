@@ -214,7 +214,7 @@ class _IntroRequestScreenState extends State<IntroRequestScreen> {
     
     return Card(
       elevation: isSelected ? 4 : 1,
-      color: isSelected ? Theme.of(context).colorScheme.primaryContainer : null,
+      color: isSelected ? Colors.green.shade200.withOpacity(0.2) : null,
       margin: const EdgeInsets.only(bottom: 12),
       child: InkWell(
         onTap: () => setState(() => _selectedPath = path),

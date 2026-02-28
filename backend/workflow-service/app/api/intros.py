@@ -71,7 +71,7 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
         "founder_id": intro_data.founder_id,
         "investor_id": intro_data.investor_id,
         "path_nodes": intro_data.path_nodes,
-        "current_node_index": 0,
+        "current_node_index": 1,  # Skip requester (index 0) — they initiated the request
         "status": IntroStatus.PENDING.value,
         "message": intro_data.message,
         "domain": intro_data.domain,
@@ -125,7 +125,7 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
             founder_id=intro_data.founder_id,
             investor_id=intro_data.investor_id,
             path_nodes=intro_data.path_nodes,
-            current_node_index=0,
+            current_node_index=1,  # Skip requester at index 0
             status=IntroStatus.PENDING,
             message=intro_data.message,
             created_at=now,
