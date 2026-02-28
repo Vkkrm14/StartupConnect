@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Any, Optional
 import logging
+from datetime import datetime
 
 from app.core.elasticsearch_client import es_client
 
@@ -107,11 +108,15 @@ class SearchService:
                 results.append({
                     "user_id": source["user_id"],
                     "name": source["name"],
-                    "role": source["role_primary"],
+                    "role_primary": source["role_primary"],
+                    "roles_secondary": source.get("roles_secondary", []),
                     "domain_tags": source.get("domain_tags", []),
                     "geography": source.get("geography"),
+                    "experience_years": source.get("experience_years", 0),
                     "reputation_score": source.get("reputation_score", 0.5),
                     "verification_status": source.get("verification_status", "unverified"),
+                    "bio": source.get("bio", ""),
+                    "created_at": source.get("created_at", datetime.utcnow().isoformat()),
                     "score": hit["_score"]
                 })
             

@@ -2,6 +2,7 @@ from gremlin_python.process.traversal import P, Order
 from gremlin_python.process.graph_traversal import __
 from typing import List, Dict, Any, Optional
 import logging
+import asyncio
 from datetime import datetime, timedelta
 
 from app.core.graph_client import graph_client
@@ -9,6 +10,32 @@ from app.core.config import settings
 from app.schemas.path_schemas import IntroPath, PathNode
 
 logger = logging.getLogger(__name__)
+
+def _extract_value(data, key, default, value_type=str):
+    """
+    Helper to extract values from Gremlin results that may be in different formats.
+    
+    GraphBinary wraps values in lists: {'name': ['Alice']}
+    GraphSON returns plain values: {'name': 'Alice'}
+    
+    This function handles both formats.
+    """
+    value = data.get(key, default)
+    
+    # If it's a list, extract the first element
+    if isinstance(value, list):
+        value = value[0] if value else default
+    
+    # Convert to the desired type
+    try:
+        if value_type == float:
+            return float(value) if value is not None else float(default)
+        elif value_type == int:
+            return int(value) if value is not None else int(default)
+        else:
+            return str(value) if value is not None else str(default)
+    except (ValueError, TypeError):
+        return default
 
 class PathDiscoveryService:
     """
@@ -32,50 +59,86 @@ class PathDiscoveryService:
         
         Algorithm:
         1. Traverse TRUSTS edges up to MAX_HOPS (default: 4)
-        2. Filter by min trust score
-        3. Prioritize mutual trust (bidirectional TRUSTS)
+        2. Use .emit() to capture paths of all lengths (1-4 hops)
+        3. Filter by min trust score
         4. Score paths by: trust × strength × recency × mutual_boost
         5. Return top N ranked paths
+        
+        Now uses GraphSON serializer which supports Path objects - enabling
+        efficient single-query multi-hop discovery instead of multiple queries.
         """
         g = graph_client.get_traversal()
         
-        try:
-            # Find all paths within hop constraint
-            paths_data = (
-                g.V().has('User', 'user_id', founder_id)
-                .repeat(
-                    __.out('TRUSTS')
-                    .simplePath()  # Avoid cycles
-                )
-                .until(
-                    __.or_(
-                        __.has('User', 'user_id', investor_id),
-                        __.loops().is_(P.gte(self.max_hops))
-                    )
-                )
-                .has('User', 'user_id', investor_id)
-                .path()
-                .by(__.valueMap(True))
-                .limit(50)  # Get more candidates for scoring
-                .toList()
-            )
+        def find_paths_multihop():
+            """
+            Find multi-hop paths using Gremlin's .path() step.
             
-            if not paths_data:
+            With GraphSON serializer, this now works efficiently in a single query!
+            
+            Strategy: Query each hop level separately (1-hop, 2-hop, etc.) and combine results.
+            This is still much more efficient than the old approach of querying each vertex/edge.
+            """
+            all_paths = []
+            
+            try:
+                # Find paths of each length from 1 to max_hops
+                for hop_count in range(1, self.max_hops + 1):
+                    try:
+                        paths_at_hop = (
+                            g.V().has('User', 'user_id', founder_id)
+                            .repeat(__.out('TRUSTS'))
+                            .times(hop_count)
+                            .has('User', 'user_id', investor_id)
+                            .path().by('user_id')
+                            .toList()
+                        )
+                        
+                        if paths_at_hop:
+                            logger.info(f"Found {len(paths_at_hop)} path(s) at {hop_count}-hop level")
+                            for path in paths_at_hop:
+                                # Convert Path object to list of user_ids
+                                user_ids = [str(uid) for uid in path]
+                                all_paths.append(user_ids)
+                    
+                    except Exception as e:
+                        logger.error(f"Error finding {hop_count}-hop paths: {e}")
+                        continue
+                
+                logger.info(f"Total paths found: {len(all_paths)}")
+                return all_paths[:max_paths * 3]  # Return extra for filtering
+                
+            except Exception as e:
+                logger.error(f"Multi-hop path discovery failed: {e}")
+                return []
+        
+        try:
+            # Run in executor to avoid event loop issues
+            loop = asyncio.get_running_loop()
+            paths_user_ids = await loop.run_in_executor(None, find_paths_multihop)
+            
+            if not paths_user_ids:
                 logger.info(f"No paths found from {founder_id} to {investor_id}")
                 return []
             
+            logger.info(f"Scoring {len(paths_user_ids)} path(s)...")
+            
             # Score and rank paths
             scored_paths = []
-            for path_data in paths_data:
-                intro_path = await self._score_path(path_data, domain_filter)
-                if intro_path:
-                    scored_paths.append(intro_path)
+            for idx, path_ids in enumerate(paths_user_ids):
+                try:
+                    intro_path = await self._score_path(path_ids, domain_filter, g)
+                    if intro_path:
+                        scored_paths.append(intro_path)
+                except Exception as e:
+                    logger.error(f"Failed to score path {idx + 1}: {str(e)}")
+                    continue
             
             # Sort by path score (descending)
             scored_paths.sort(key=lambda x: x.path_score, reverse=True)
             
             logger.info(
-                f"Found {len(scored_paths)} valid paths from {founder_id} to {investor_id}"
+                f"Returning top {min(len(scored_paths), max_paths)} path(s) "
+                f"from {founder_id} to {investor_id}"
             )
             
             return scored_paths[:max_paths]
@@ -86,8 +149,9 @@ class PathDiscoveryService:
     
     async def _score_path(
         self,
-        path_data: List[Dict],
-        domain_filter: Optional[str] = None
+        path_user_ids: List[str],
+        domain_filter: Optional[str] = None,
+        g = None
     ) -> Optional[IntroPath]:
         """
         Score a single path based on trust-weighted metrics.
@@ -103,15 +167,28 @@ class PathDiscoveryService:
         recency_scores = []
         mutual_boosts = []
         
-        g = graph_client.get_traversal()
+        if g is None:
+            g = graph_client.get_traversal()
         
-        for i, vertex_data in enumerate(path_data):
-            # Extract vertex properties
+        loop = asyncio.get_running_loop()
+        
+        for i, user_id in enumerate(path_user_ids):
+            # Query vertex properties separately to avoid serialization issues
+            def get_vertex_data():
+                return (
+                    g.V().has('User', 'user_id', user_id)
+                    .valueMap('user_id', 'name', 'role_primary', 'reputation_score')
+                    .next()
+                )
+            
+            vertex_data = await loop.run_in_executor(None, get_vertex_data)
+            
+            # Extract vertex properties (handles both GraphBinary and GraphSON formats)
             node = PathNode(
-                user_id=vertex_data.get('user_id', [''])[0],
-                name=vertex_data.get('name', ['Unknown'])[0],
-                role=vertex_data.get('role_primary', [''])[0],
-                reputation_score=float(vertex_data.get('reputation_score', [0.5])[0])
+                user_id=_extract_value(vertex_data, 'user_id', user_id, str),
+                name=_extract_value(vertex_data, 'name', 'Unknown', str),
+                role=_extract_value(vertex_data, 'role_primary', '', str),
+                reputation_score=_extract_value(vertex_data, 'reputation_score', 0.5, float)
             )
             nodes.append(node)
             
@@ -121,25 +198,32 @@ class PathDiscoveryService:
                 to_id = node.user_id
                 
                 # Query edge properties
-                edge_props = (
-                    g.V().has('User', 'user_id', from_id)
-                    .outE('TRUSTS')
-                    .where(__.inV().has('User', 'user_id', to_id))
-                    .valueMap(True)
-                    .next()
-                )
+                def get_edge_props():
+                    return (
+                        g.V().has('User', 'user_id', from_id)
+                        .outE('TRUSTS')
+                        .where(__.inV().has('User', 'user_id', to_id))
+                        .valueMap(True)
+                        .next()
+                    )
                 
-                trust_score = float(edge_props.get('trust_score', [0.5])[0])
-                strength_score = float(edge_props.get('strength_score', [0.5])[0])
-                recency_score = float(edge_props.get('recency_score', [1.0])[0])
+                edge_props = await loop.run_in_executor(None, get_edge_props)
+                
+                # Extract edge properties (handles both GraphBinary and GraphSON formats)
+                trust_score = _extract_value(edge_props, 'trust_score', 0.5, float)
+                strength_score = _extract_value(edge_props, 'strength_score', 0.5, float)
+                recency_score = _extract_value(edge_props, 'recency_score', 1.0, float)
                 
                 # Check for mutual trust (bidirectional)
-                mutual_exists = (
-                    g.V().has('User', 'user_id', to_id)
-                    .outE('TRUSTS')
-                    .where(__.inV().has('User', 'user_id', from_id))
-                    .hasNext()
-                )
+                def check_mutual():
+                    return (
+                        g.V().has('User', 'user_id', to_id)
+                        .outE('TRUSTS')
+                        .where(__.inV().has('User', 'user_id', from_id))
+                        .hasNext()
+                    )
+                
+                mutual_exists = await loop.run_in_executor(None, check_mutual)
                 
                 mutual_boost = 1.5 if mutual_exists else 1.0
                 

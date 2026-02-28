@@ -11,6 +11,7 @@ from app.core.config import settings
 import sys
 sys.path.append("/app/shared")
 from auth.jwt_handler import create_access_token, create_refresh_token, decode_token
+from auth.dependencies import get_current_user as get_jwt_user, CurrentUser
 from messaging.kafka_producer import KafkaEventProducer
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
@@ -84,16 +85,40 @@ async def register(data: RegisterRequest):
             
             user_data = response.json()
             user_id = user_data["user_id"]
-        
+
+        # Index user in Elasticsearch (fire-and-forget, don't fail registration if this errors)
+        try:
+            async with httpx.AsyncClient() as es_client:
+                await es_client.post(
+                    f"{settings.SEARCH_SERVICE_URL}/api/v1/search/index/user",
+                    json={
+                        "user_id": user_id,
+                        "name": data.name,
+                        "role_primary": data.role_primary,
+                        "roles_secondary": [],
+                        "domain_tags": data.domain_tags,
+                        "geography": data.geography or "",
+                        "experience_years": 0,
+                        "reputation_score": 0.5,
+                        "verification_status": "unverified",
+                        "bio": "",
+                        "created_at": datetime.utcnow().isoformat()
+                    },
+                    timeout=5.0
+                )
+                logger.info(f"✅ Indexed user {user_id} in Elasticsearch")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to index user in Elasticsearch: {e}")
+
         # Generate JWT tokens
         access_token = create_access_token(
-            data={"sub": user_id, "email": data.email, "role": data.role_primary}
+            user_id=user_id,
+            role=data.role_primary,
+            additional_claims={"email": data.email}
         )
         refresh_token = create_refresh_token(
-            data={"sub": user_id}
+            user_id=user_id
         )
-        
-        # Publish user_created event to Kafka
         if kafka_producer:
             try:
                 await kafka_producer.publish_event(
@@ -168,10 +193,12 @@ async def login(data: LoginRequest):
         
         # Generate JWT tokens
         access_token = create_access_token(
-            data={"sub": user_id, "email": data.email, "role": role}
+            user_id=user_id,
+            role=role,
+            additional_claims={"email": data.email}
         )
         refresh_token = create_refresh_token(
-            data={"sub": user_id}
+            user_id=user_id
         )
         
         logger.info(f"✅ User logged in: {user_id}")
@@ -225,11 +252,9 @@ async def refresh_token(refresh_token: str):
         
         # Generate new access token
         access_token = create_access_token(
-            data={
-                "sub": user_id,
-                "email": user_data["email"],
-                "role": user_data["role_primary"]
-            }
+            user_id=user_id,
+            role=user_data["role_primary"],
+            additional_claims={"email": user_data.get("email", "")}
         )
         
         return TokenResponse(
@@ -248,26 +273,26 @@ async def refresh_token(refresh_token: str):
         )
 
 @router.get("/me")
-async def get_current_user(user_id: str = Depends(lambda: "dummy")):  # Will be replaced with proper dependency
+async def get_current_user(current_user: CurrentUser = Depends(get_jwt_user)):
     """
     Get current authenticated user
-    
+
     Requires valid JWT token in Authorization header
     """
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users/{user_id}"
+                f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users/{current_user.user_id}"
             )
-            
+
             if response.status_code != 200:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="User not found"
                 )
-            
+
             return response.json()
-            
+
     except HTTPException:
         raise
     except Exception as e:

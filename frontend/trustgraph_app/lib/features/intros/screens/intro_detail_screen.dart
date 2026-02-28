@@ -135,6 +135,10 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.go('/home'),
+        ),
         title: const Text('Introduction Request'),
       ),
       body: _isLoading
@@ -164,7 +168,7 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
                       const SizedBox(height: 24),
 
                       // Message
-                      if (_intro!.message != null) ...[
+                      if (_intro!.message.isNotEmpty) ...[
                         Text(
                           'Message',
                           style: Theme.of(context).textTheme.titleMedium,

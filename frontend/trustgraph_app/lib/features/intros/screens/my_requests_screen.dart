@@ -32,9 +32,7 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
     try {
       final user = await _authRepository.getCurrentUser();
       if (user != null) {
-        // In a real app, you'd have a dedicated endpoint for user's requests
-        // For now, we'll use getPendingApprovals as a placeholder
-        final intros = await _introRepository.getPendingApprovals(user.userId);
+        final intros = await _introRepository.getUserIntroRequests(user.userId);
         setState(() {
           _myRequests = intros;
           _isLoading = false;
@@ -84,6 +82,10 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.go('/home'),
+        ),
         title: const Text('My Requests'),
       ),
       body: _isLoading
@@ -193,7 +195,7 @@ class _MyRequestsScreenState extends State<MyRequestsScreen> {
                                     ),
                                   ],
                                 ),
-                                if (request.message != null) ...[
+                                if (request.message.isNotEmpty) ...[
                                   const SizedBox(height: 8),
                                   Text(
                                     request.message!,

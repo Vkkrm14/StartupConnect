@@ -109,6 +109,26 @@ class SearchRepository {
     }
   }
 
+  /// Get all users from the graph, optionally filtered by role
+  Future<List<UserModel>> getAllUsers({String? role}) async {
+    try {
+      final queryParams = <String, dynamic>{'limit': 100};
+      if (role != null) queryParams['role'] = role;
+
+      final response = await _apiClient.get(
+        '/api/v1/users',
+        queryParameters: queryParams,
+      );
+
+      final List<dynamic> data =
+          response.data is List ? response.data : [];
+      return data.map((json) => UserModel.fromJson(json)).toList();
+    } on DioException catch (e) {
+      print('Get all users error: ${ApiClient.getErrorMessage(e)}');
+      return [];
+    }
+  }
+
   /// Autocomplete suggestions
   Future<List<AutocompleteSuggestion>> autocomplete({
     required String query,

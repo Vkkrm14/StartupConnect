@@ -84,6 +84,18 @@ async def health_check():
 # Graph Service Proxy Routes
 # ========================================
 
+@app.get("/api/v1/users")
+async def list_users(role: str = None, limit: int = 100):
+    """Proxy to graph service - list users"""
+    params = {"limit": limit}
+    if role:
+        params["role"] = role
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users",
+        params=params
+    )
+    return response.json()
+
 @app.post("/api/v1/users")
 async def create_user(request: Request):
     """Proxy to graph service - create user"""
@@ -136,6 +148,22 @@ async def create_intro_request(request: Request):
     )
     return response.json()
 
+@app.get("/api/v1/intros/user/{user_id}")
+async def get_user_intro_requests(user_id: str):
+    """Proxy to workflow service - get user's intro requests"""
+    response = await http_client.get(
+        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/user/{user_id}"
+    )
+    return response.json()
+
+@app.get("/api/v1/intros/pending/{user_id}")
+async def get_pending_approvals(user_id: str):
+    """Proxy to workflow service - get pending approvals for user"""
+    response = await http_client.get(
+        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/pending/{user_id}"
+    )
+    return response.json()
+
 @app.get("/api/v1/intros/{intro_id}")
 async def get_intro_request(intro_id: str):
     """Proxy to workflow service - get intro request"""
@@ -143,6 +171,35 @@ async def get_intro_request(intro_id: str):
         f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/{intro_id}"
     )
     return response.json()
+
+@app.post("/api/v1/intros/{intro_id}/approve")
+async def approve_intro_request(request: Request, intro_id: str):
+    """Proxy to workflow service - approve intro request"""
+    body = await request.json()
+    response = await http_client.post(
+        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/{intro_id}/approve",
+        json=body
+    )
+    return response.json()
+
+@app.post("/api/v1/intros/{intro_id}/decline")
+async def decline_intro_request(request: Request, intro_id: str):
+    """Proxy to workflow service - decline intro request"""
+    body = await request.json()
+    response = await http_client.post(
+        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/{intro_id}/decline",
+        json=body
+    )
+    return response.json()
+
+@app.post("/api/v1/intros/{intro_id}/complete")
+async def complete_intro_request(request: Request, intro_id: str):
+    """Proxy to workflow service - complete intro request"""
+    response = await http_client.post(
+        f"{settings.WORKFLOW_SERVICE_URL}/api/v1/intros/{intro_id}/complete"
+    )
+    return response.json()
+
 
 # ========================================
 # Search Service Proxy Routes

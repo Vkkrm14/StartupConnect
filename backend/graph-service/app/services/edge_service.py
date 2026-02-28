@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime
 import logging
 
+from gremlin_python import statics
+from gremlin_python.process.graph_traversal import __
 from app.core.graph_client import graph_client
 from app.schemas.edge_schemas import (
     TrustsEdgeCreate, TrustsEdgeResponse,
@@ -25,29 +27,24 @@ class EdgeService:
         created_at = datetime.utcnow()
         
         try:
-            # Get source and target vertices
-            from_vertex = g.V().has('User', 'user_id', edge_data.from_user_id).next()
-            to_vertex = g.V().has('User', 'user_id', edge_data.to_user_id).next()
+            # Create edge directly using has() steps (avoids materializing vertex objects)
+            g.V().has('User', 'user_id', edge_data.from_user_id) \
+                .addE('TRUSTS') \
+                .to(__.V().has('User', 'user_id', edge_data.to_user_id)) \
+                .property('edge_id', edge_id) \
+                .property('trust_score', edge_data.trust_score) \
+                .property('strength_score', edge_data.strength_score) \
+                .property('recency_score', edge_data.recency_score) \
+                .property('interaction_count', edge_data.interaction_count) \
+                .property('endorsement_count', edge_data.endorsement_count) \
+                .property('successful_intros', 0) \
+                .property('created_at', int(created_at.timestamp())) \
+                .iterate()
             
-            # Create edge
-            edge = (
-                g.V(from_vertex)
-                .addE('TRUSTS')
-                .to(to_vertex)
-                .property('edge_id', edge_id)
-                .property('trust_score', edge_data.trust_score)
-                .property('strength_score', edge_data.strength_score)
-                .property('recency_score', edge_data.recency_score)
-                .property('interaction_count', edge_data.interaction_count)
-                .property('endorsement_count', edge_data.endorsement_count)
-                .property('successful_intros', 0)
-                .property('created_at', int(created_at.timestamp()))
-                .next()
-            )
-            
-            # Add domain tags
-            for tag in edge_data.domain_tags:
-                g.E(edge).property('domain_tags', tag).iterate()
+            # Add domain tags to the edge
+            if edge_data.domain_tags:
+                for tag in edge_data.domain_tags:
+                    g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
             
             logger.info(
                 f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id}"
@@ -145,22 +142,16 @@ class EdgeService:
         created_at = datetime.utcnow()
         
         try:
-            # Get user and startup vertices
-            user_vertex = g.V().has('User', 'user_id', edge_data.user_id).next()
-            startup_vertex = g.V().has('Startup', 'startup_id', edge_data.startup_id).next()
-            
-            # Create edge
-            edge = (
-                g.V(user_vertex)
-                .addE('FOUNDED')
-                .to(startup_vertex)
-                .property('edge_id', edge_id)
-                .property('role', edge_data.role)
-                .property('start_date', int(edge_data.start_date.timestamp()) if edge_data.start_date else None)
-                .property('active', edge_data.active)
-                .property('created_at', int(created_at.timestamp()))
-                .next()
-            )
+            # Create edge directly using has() steps (avoids materializing vertex objects)
+            g.V().has('User', 'user_id', edge_data.user_id) \
+                .addE('FOUNDED') \
+                .to(__.V().has('Startup', 'startup_id', edge_data.startup_id)) \
+                .property('edge_id', edge_id) \
+                .property('role', edge_data.role) \
+                .property('start_date', int(edge_data.start_date.timestamp()) if edge_data.start_date else None) \
+                .property('active', edge_data.active) \
+                .property('created_at', int(created_at.timestamp())) \
+                .iterate()
             
             logger.info(
                 f"✅ Created FOUNDED edge: {edge_data.user_id} → {edge_data.startup_id}"
@@ -190,23 +181,17 @@ class EdgeService:
         created_at = datetime.utcnow()
         
         try:
-            # Get investor and startup vertices
-            investor_vertex = g.V().has('User', 'user_id', edge_data.investor_id).next()
-            startup_vertex = g.V().has('Startup', 'startup_id', edge_data.startup_id).next()
-            
-            # Create edge
-            edge = (
-                g.V(investor_vertex)
-                .addE('INVESTED_IN')
-                .to(startup_vertex)
-                .property('edge_id', edge_id)
-                .property('round', edge_data.round)
-                .property('amount_range', edge_data.amount_range)
-                .property('year', edge_data.year)
-                .property('visibility', edge_data.visibility)
-                .property('created_at', int(created_at.timestamp()))
-                .next()
-            )
+            # Create edge directly using has() steps (avoids materializing vertex objects)
+            g.V().has('User', 'user_id', edge_data.investor_id) \
+                .addE('INVESTED_IN') \
+                .to(__.V().has('Startup', 'startup_id', edge_data.startup_id)) \
+                .property('edge_id', edge_id) \
+                .property('round', edge_data.round) \
+                .property('amount_range', edge_data.amount_range) \
+                .property('year', edge_data.year) \
+                .property('visibility', edge_data.visibility) \
+                .property('created_at', int(created_at.timestamp())) \
+                .iterate()
             
             logger.info(
                 f"✅ Created INVESTED_IN edge: {edge_data.investor_id} → {edge_data.startup_id}"

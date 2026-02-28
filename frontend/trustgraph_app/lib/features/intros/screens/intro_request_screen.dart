@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../../data/repositories/intro_repository.dart';
 import '../../../data/repositories/auth_repository.dart';
 import '../../../data/providers/api_client.dart';
@@ -89,7 +90,7 @@ class _IntroRequestScreenState extends State<IntroRequestScreen> {
           backgroundColor: Colors.green,
         ),
       );
-      Navigator.of(context).pop();
+      context.pop();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -104,6 +105,10 @@ class _IntroRequestScreenState extends State<IntroRequestScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.go('/home'),
+        ),
         title: const Text('Request Introduction'),
       ),
       body: _isLoading
@@ -366,7 +371,7 @@ class _IntroRequestScreenState extends State<IntroRequestScreen> {
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
-              onPressed: () => Navigator.of(context).pop(),
+              onPressed: () => context.pop(),
               icon: const Icon(Icons.arrow_back),
               label: const Text('Go Back'),
             ),

@@ -39,6 +39,8 @@ class OrgType(str, Enum):
 # ========================================
 class UserCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
+    email: Optional[str] = None
+    password_hash: Optional[str] = None
     role_primary: UserRole
     roles_secondary: List[UserRole] = []
     domain_tags: List[str] = Field(default_factory=list)
@@ -53,6 +55,8 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     user_id: str
     name: str
+    email: Optional[str] = None
+    password_hash: Optional[str] = None
     role_primary: UserRole
     roles_secondary: List[UserRole]
     domain_tags: List[str]

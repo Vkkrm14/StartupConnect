@@ -52,6 +52,10 @@ class _PendingIntrosScreenState extends State<PendingIntrosScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.go('/home'),
+        ),
         title: const Text('Pending Introductions'),
       ),
       body: _isLoading
@@ -116,7 +120,7 @@ class _PendingIntrosScreenState extends State<PendingIntrosScreen> {
                                   'From: ${intro.requesterId}',
                                   style: Theme.of(context).textTheme.bodyMedium,
                                 ),
-                                if (intro.message != null) ...[
+                                if (intro.message.isNotEmpty) ...[
                                   const SizedBox(height: 8),
                                   Text(
                                     intro.message!,

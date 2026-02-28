@@ -114,6 +114,139 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
             detail=str(e)
         )
 
+@router.get("/user/{user_id}")
+async def get_user_intro_requests(request: Request, user_id: str):
+    """Get all intro requests involving a user (as requester, founder, or investor)"""
+    db = request.app.state.db
+
+    docs = await db.intro_requests.find({
+        "$or": [
+            {"requester_id": user_id},
+            {"founder_id": user_id},
+            {"investor_id": user_id}
+        ]
+    }).sort("created_at", -1).to_list(length=100)
+
+    result = []
+    for doc in docs:
+        result.append({
+            "intro_id": doc["intro_id"],
+            "requester_id": doc["requester_id"],
+            "founder_id": doc["founder_id"],
+            "investor_id": doc["investor_id"],
+            "path_nodes": doc.get("path_nodes", []),
+            "current_node_index": doc.get("current_node_index", 0),
+            "status": doc["status"],
+            "message": doc.get("message", ""),
+            "created_at": doc["created_at"].isoformat() if hasattr(doc.get("created_at"), "isoformat") else str(doc.get("created_at", "")),
+            "updated_at": doc["updated_at"].isoformat() if hasattr(doc.get("updated_at"), "isoformat") else str(doc.get("updated_at", ""))
+        })
+
+    return {"intro_requests": result}
+
+
+@router.get("/pending/{user_id}")
+async def get_pending_approvals(request: Request, user_id: str):
+    """Get intro requests pending the user's approval (user is next in path_nodes)"""
+    db = request.app.state.db
+
+    docs = await db.intro_requests.find({
+        "path_nodes": user_id,
+        "status": {"$in": [IntroStatus.PENDING.value, IntroStatus.APPROVED.value]}
+    }).sort("created_at", -1).to_list(length=100)
+
+    # Filter to only those where user_id is the current node awaiting action
+    result = []
+    for doc in docs:
+        current_index = doc.get("current_node_index", 0)
+        path_nodes = doc.get("path_nodes", [])
+        if current_index < len(path_nodes) and path_nodes[current_index] == user_id:
+            result.append({
+                "intro_id": doc["intro_id"],
+                "requester_id": doc["requester_id"],
+                "founder_id": doc["founder_id"],
+                "investor_id": doc["investor_id"],
+                "path_nodes": path_nodes,
+                "current_node_index": current_index,
+                "status": doc["status"],
+                "message": doc.get("message", ""),
+                "created_at": doc["created_at"].isoformat() if hasattr(doc.get("created_at"), "isoformat") else str(doc.get("created_at", "")),
+                "updated_at": doc["updated_at"].isoformat() if hasattr(doc.get("updated_at"), "isoformat") else str(doc.get("updated_at", ""))
+            })
+
+    return {"pending_intros": result}
+
+
+@router.post("/{intro_id}/approve")
+async def approve_intro_by_id(request: Request, intro_id: str):
+    """Approve an intro request (user_id in body)"""
+    db = request.app.state.db
+    body = await request.json()
+    user_id = body.get("user_id") or body.get("approver_id")
+    message = body.get("message") or body.get("comment", "")
+
+    intro_doc = await db.intro_requests.find_one({"intro_id": intro_id})
+    if not intro_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Intro {intro_id} not found")
+
+    current_index = intro_doc.get("current_node_index", 0)
+    path_nodes = intro_doc.get("path_nodes", [])
+    new_index = current_index + 1
+    new_status = IntroStatus.COMPLETED.value if new_index >= len(path_nodes) else IntroStatus.APPROVED.value
+
+    await db.intro_requests.update_one(
+        {"intro_id": intro_id},
+        {
+            "$set": {"current_node_index": new_index, "status": new_status, "updated_at": datetime.utcnow()},
+            "$push": {"approvals": {"approver_id": user_id, "action": "accept", "comment": message, "timestamp": datetime.utcnow()}}
+        }
+    )
+    logger.info(f"✅ Intro {intro_id} approved by {user_id}")
+    if new_status == IntroStatus.COMPLETED.value:
+        return {"message": "Intro request completed!", "status": "completed"}
+    return {"message": "Approval recorded, forwarded to next node", "next_approver": path_nodes[new_index] if new_index < len(path_nodes) else None}
+
+
+@router.post("/{intro_id}/decline")
+async def decline_intro_by_id(request: Request, intro_id: str):
+    """Decline an intro request (user_id in body)"""
+    db = request.app.state.db
+    body = await request.json()
+    user_id = body.get("user_id") or body.get("approver_id")
+    message = body.get("message") or body.get("comment", "")
+
+    intro_doc = await db.intro_requests.find_one({"intro_id": intro_id})
+    if not intro_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Intro {intro_id} not found")
+
+    await db.intro_requests.update_one(
+        {"intro_id": intro_id},
+        {
+            "$set": {"status": IntroStatus.DECLINED.value, "updated_at": datetime.utcnow()},
+            "$push": {"approvals": {"approver_id": user_id, "action": "decline", "comment": message, "timestamp": datetime.utcnow()}}
+        }
+    )
+    logger.info(f"❌ Intro {intro_id} declined by {user_id}")
+    return {"message": "Intro request declined"}
+
+
+@router.post("/{intro_id}/complete")
+async def complete_intro_by_id(request: Request, intro_id: str):
+    """Mark an intro request as completed"""
+    db = request.app.state.db
+
+    intro_doc = await db.intro_requests.find_one({"intro_id": intro_id})
+    if not intro_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Intro {intro_id} not found")
+
+    await db.intro_requests.update_one(
+        {"intro_id": intro_id},
+        {"$set": {"status": IntroStatus.COMPLETED.value, "updated_at": datetime.utcnow()}}
+    )
+    logger.info(f"✅ Intro {intro_id} marked as completed")
+    return {"message": "Intro request completed"}
+
+
 @router.get("/{intro_id}", response_model=IntroRequestResponse)
 async def get_intro_request(request: Request, intro_id: str):
     """Get intro request by ID"""

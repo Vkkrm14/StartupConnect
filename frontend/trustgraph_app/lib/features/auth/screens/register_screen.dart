@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../../data/repositories/auth_repository.dart';
 import '../../../data/providers/api_client.dart';
 
@@ -81,7 +82,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
       
       // Navigate to home
-      Navigator.of(context).pushReplacementNamed('/home');
+      context.go('/home');
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -306,7 +307,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const Text('Already have an account?'),
                     TextButton(
                       onPressed: () {
-                        Navigator.of(context).pop();
+                        context.go('/login');
                       },
                       child: const Text('Log In'),
                     ),

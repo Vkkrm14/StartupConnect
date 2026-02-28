@@ -1,0 +1,7 @@
+FROM janusgraph/janusgraph:latest
+
+# Copy permanent server config into image
+COPY janusgraph-server.yaml /opt/janusgraph/conf/janusgraph-server.yaml
+
+# Start JanusGraph with correct config
+CMD ["/opt/janusgraph/bin/janusgraph-server.sh", "start"]

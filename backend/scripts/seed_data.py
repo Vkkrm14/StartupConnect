@@ -5,11 +5,18 @@ import uuid
 from datetime import datetime, timezone
 import random
 import time
+import sys
+import hashlib
 from typing import Dict, List
+from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
+from gremlin_python.process.anonymous_traversal import traversal
+from gremlin_python.driver.serializer import GraphBinarySerializersV1
 
 # Configuration
 GRAPH_SERVICE_URL = "http://localhost:8001"
+SEARCH_SERVICE_URL = "http://localhost:8003"
 API_TIMEOUT = 10
+DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
 
 # Sample data
 FOUNDERS = [
@@ -49,10 +56,82 @@ def check_service_health() -> bool:
         return False
 
 
+def check_database_empty() -> bool:
+    """Check if JanusGraph database is empty"""
+    try:
+        connection = DriverRemoteConnection(
+            'ws://localhost:8182/gremlin',
+            'g',
+            message_serializer=GraphBinarySerializersV1()
+        )
+        g = traversal().withRemote(connection)
+        
+        vertex_count = g.V().count().next()
+        connection.close()
+        
+        return vertex_count == 0
+    except Exception as e:
+        print(f"⚠️ Could not check database status: {e}")
+        return None
+
+
+def clear_database() -> bool:
+    """Clear all data from JanusGraph database"""
+    try:
+        print("🗑️ Clearing existing data from database...")
+        connection = DriverRemoteConnection(
+            'ws://localhost:8182/gremlin',
+            'g',
+            message_serializer=GraphBinarySerializersV1()
+        )
+        g = traversal().withRemote(connection)
+        
+        # Get counts before deletion
+        vertex_count = g.V().count().next()
+        edge_count = g.E().count().next()
+        
+        if vertex_count > 0 or edge_count > 0:
+            print(f"  Found {vertex_count} vertices and {edge_count} edges")
+            g.V().drop().iterate()
+            print("  ✅ Database cleared")
+        else:
+            print("  ℹ️ Database was already empty")
+        
+        connection.close()
+        return True
+    except Exception as e:
+        print(f"❌ Failed to clear database: {e}")
+        return False
+
+
+def get_user_by_name(name: str) -> Dict:
+    """Check if a user already exists by name"""
+    try:
+        # Note: This would require a GET endpoint that accepts name query
+        # For now, we'll use a workaround with direct gremlin query via a hypothetical endpoint
+        # In a real scenario, you'd add a query endpoint to the Graph Service
+        return None
+    except Exception:
+        return None
+
+
+def get_startup_by_name(name: str) -> Dict:
+    """Check if a startup already exists by name"""
+    try:
+        return None
+    except Exception:
+        return None
+
+
 def create_user(user_data: dict, role: str) -> Dict:
     """Create a user via Graph Service API"""
+    # Hash the default password using SHA256 (same as auth.py)
+    password_hash = hashlib.sha256(DEFAULT_PASSWORD.encode()).hexdigest()
+    
     payload = {
         "name": user_data["name"],
+        "email": user_data["email"],
+        "password_hash": password_hash,
         "role_primary": role,
         "domain_tags": user_data["domain"],
         "geography": user_data.get("geography"),
@@ -71,6 +150,33 @@ def create_user(user_data: dict, role: str) -> Dict:
     except requests.exceptions.RequestException as e:
         print(f"❌ Failed to create user {user_data['name']}: {e}")
         raise
+
+
+def index_user_in_search(user: Dict, role: str, user_info: dict) -> bool:
+    """Index a user into Elasticsearch via Search Service"""
+    try:
+        payload = {
+            "user_id": user["user_id"],
+            "name": user["name"],
+            "role_primary": role,
+            "roles_secondary": user.get("roles_secondary", []),
+            "domain_tags": user.get("domain_tags", user_info.get("domain", [])),
+            "geography": user.get("geography", user_info.get("geography", "")),
+            "experience_years": user.get("experience_years", 0),
+            "reputation_score": user.get("reputation_score", 0.5),
+            "verification_status": user.get("verification_status", "verified"),
+            "bio": user.get("bio", ""),
+            "created_at": user.get("created_at", "")
+        }
+        response = requests.post(
+            f"{SEARCH_SERVICE_URL}/api/v1/search/index/user",
+            json=payload,
+            timeout=API_TIMEOUT
+        )
+        return response.status_code == 200
+    except Exception as e:
+        print(f"  ⚠️  Could not index {user['name']} in Elasticsearch: {e}")
+        return False
 
 
 def create_startup(startup_data: dict) -> Dict:
@@ -189,14 +295,31 @@ def seed_data():
     
     print("✅ Graph Service is healthy and ready")
     
+    # Check if database is empty
+    print("\n🔍 Checking database status...")
+    is_empty = check_database_empty()
+    
+    if is_empty is False:  # Database has data
+        print("⚠️  Database contains existing data")
+        response = input("Do you want to clear it before seeding? (yes/no): ")
+        if response.lower() == 'yes':
+            if not clear_database():
+                print("❌ Failed to clear database. Aborting.")
+                return
+        else:
+            print("⚠️  Seeding into non-empty database. This may create duplicates!")
+            time.sleep(2)  # Give user time to read the warning
+    
     user_ids = {}
     startup_ids = {}
-    
+    created_users = []  # Track all created users for ES indexing
+
     # Create Founders
     print("\n👤 Creating founders...")
     for founder in FOUNDERS:
         user = create_user(founder, "founder")
         user_ids[founder["name"]] = user["user_id"]
+        created_users.append((user, "founder", founder))
         print(f"  ✅ {founder['name']} (ID: {user['user_id'][:8]}...)")
     
     # Create Investors
@@ -204,6 +327,7 @@ def seed_data():
     for investor in INVESTORS:
         user = create_user(investor, "investor")
         user_ids[investor["name"]] = user["user_id"]
+        created_users.append((user, "investor", investor))
         print(f"  ✅ {investor['name']} (ID: {user['user_id'][:8]}...)")
     
     # Create Connectors
@@ -211,8 +335,18 @@ def seed_data():
     for connector in CONNECTORS:
         user = create_user(connector, "connector")
         user_ids[connector["name"]] = user["user_id"]
+        created_users.append((user, "connector", connector))
         print(f"  ✅ {connector['name']} (ID: {user['user_id'][:8]}...)")
-    
+
+    # Index all users into Elasticsearch
+    print("\n🔍 Indexing users into Elasticsearch...")
+    es_ok = 0
+    for user, role, info in created_users:
+        success = index_user_in_search(user, role, info)
+        if success:
+            es_ok += 1
+    print(f"  ✅ Indexed {es_ok}/{len(created_users)} users into Elasticsearch")
+
     # Create Startups
     print("\n🚀 Creating startups...")
     for startup in STARTUPS:
@@ -303,7 +437,41 @@ def seed_data():
 
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Seed TrustGraph database with sample data')
+    parser.add_argument('--clear', action='store_true', 
+                       help='Clear database before seeding (no prompt)')
+    parser.add_argument('--force', action='store_true',
+                       help='Skip all confirmations')
+    
+    args = parser.parse_args()
+    
+    # Auto-clear if flag provided
+    if args.clear:
+        print("🗑️ --clear flag detected, clearing database...")
+        connection = DriverRemoteConnection(
+            'ws://localhost:8182/gremlin',
+            'g',
+            message_serializer=GraphBinarySerializersV1()
+        )
+        g = traversal().withRemote(connection)
+        vertex_count = g.V().count().next()
+        if vertex_count > 0:
+            print(f"  Deleting {vertex_count} vertices...")
+            g.V().drop().iterate()
+            print("  ✅ Database cleared")
+        else:
+            print("  ℹ️ Database was already empty")
+        connection.close()
+    
     try:
+        # Set force mode for automated runs
+        if args.force:
+            # Monkey patch input to auto-answer 'yes'
+            import builtins
+            builtins.input = lambda _: 'yes'
+        
         seed_data()
     except KeyboardInterrupt:
         print("\n\n⚠️  Seeding interrupted by user")

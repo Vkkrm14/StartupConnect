@@ -71,24 +71,26 @@ services:
     image: janusgraph/janusgraph:1.0.0
     container_name: trustgraph-janusgraph
     restart: unless-stopped
+
     ports:
       - "8182:8182"
       - "8184:8184"
+
     depends_on:
       cassandra:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+
     environment:
       JAVA_OPTIONS: "-Xms512m -Xmx2g"
     volumes:
-      - ./backend/graph-service/config/janusgraph-server.yaml:/etc/opt/janusgraph/janusgraph-server.yaml
+    # Mount EXACT path being loaded
       - ./backend/graph-service/config/janusgraph-cassandra-es.properties:/opt/janusgraph/conf/janusgraph.properties
-      - ./backend/graph-service/scripts:/opt/janusgraph/scripts
-    command: >
-      /opt/janusgraph/bin/janusgraph-server.sh /etc/opt/janusgraph/janusgraph-server.yaml
+
     networks:
       - trustgraph-network
+
     healthcheck:
       test: ["CMD-SHELL", "bash -lc 'cat < /dev/null > /dev/tcp/localhost/8182'"]
       interval: 15s

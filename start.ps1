@@ -117,13 +117,11 @@ Write-Host "`n================================`n" -ForegroundColor Cyan
 Write-Host "Seeding sample data..." -ForegroundColor Yellow
 Write-Host "   (10 users, 4 startups, trust network)`n" -ForegroundColor Gray
 
-Push-Location backend\scripts
-python seed_data.py
-Pop-Location
+python backend\scripts\seed_data.py --clear --force
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`n  Data seeding failed. Services may not be fully ready yet." -ForegroundColor Yellow
-    Write-Host "   You can try again later with: python backend\scripts\seed_data.py`n" -ForegroundColor Gray
+    Write-Host "   You can try again later with: python backend\scripts\seed_data.py --clear`n" -ForegroundColor Gray
 } else {
     Write-Host "[OK] Sample data seeded successfully`n" -ForegroundColor Green
 }

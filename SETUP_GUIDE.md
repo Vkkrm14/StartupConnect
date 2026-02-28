@@ -108,7 +108,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 REFRESH_TOKEN_EXPIRE_DAYS=7
 
 # CORS
-CORS_ORIGINS=http://localhost:3000,http://localhost:8080
+CORS_ORIGINS=http://localhost:3000,http://localhost:8000,http://localhost:8001
 
 # Email (Development - logs to console)
 EMAIL_ENABLED=false
@@ -188,28 +188,57 @@ docker compose logs -f janusgraph
 ### **Step 5: Install Python Dependencies**
 
 ```powershell
-# Install dependencies for running seed script and consumers
-pip install gremlinpython==3.7.1 motor==3.3.2 kafka-python==2.0.2 aiohttp async_timeout
+# Install dependencies for running seed script and test scripts
+pip install gremlinpython==3.7.1 requests
 ```
 
 ### **Step 6: Seed Sample Data**
 
-**⚠️ IMPORTANT: Due to a JanusGraph 1.0.0 configuration limitation, the Python seed script doesn't work with remote connections.**
+The seed script creates a sample trust network with users, startups, and relationships.
 
-**✅ WORKING SOLUTION:** Use Gremlin Console instead. See [SEED_DATA_SOLUTION.md](SEED_DATA_SOLUTION.md) for complete instructions.
-
-**Quick Method:**
 ```powershell
-# Enter Gremlin Console
-docker exec -it trustgraph-janusgraph ./bin/gremlin.sh
+# Seed the database (auto-clears existing data)
+python backend\scripts\seed_data.py --clear
 ```
 
-Then paste the quick script from [SEED_DATA_SOLUTION.md](SEED_DATA_SOLUTION.md#📋-quick-copy-paste-script).
+**What gets created:**
+- 10 Users (5 founders, 3 investors, 2 connectors)
+- 4 Startups (FinFlow, HealthAI, EduTech Pro, BlockChain Solutions)
+- 10 TRUSTS edges (trust relationships)
+- 4 FOUNDED edges (founder-startup relationships)
+- 3 INVESTED_IN edges (investor-startup relationships)
 
-**Alternative - Manual Testing:**
-Skip seeding for now and register users directly through the Flutter app when you start it in Step 9.
+**Verify the seeded data:**
+```powershell
+python verify_seed_data.py
+```
 
-**Original Python script (seed_data.py) is ready for future JanusGraph updates.**
+You should see:
+```
+===== VERTEX COUNTS =====
+Total vertices: 14
+  - Users: 10
+  - Startups: 4
+
+===== EDGE COUNTS =====
+Total edges: 17
+  - TRUSTS: 10
+  - FOUNDED: 4
+  - INVESTED_IN: 3
+
+✅ All counts match expected values!
+```
+
+**Seed script options:**
+- `--clear` - Automatically clear database before seeding (recommended)
+- `--force` - Skip all confirmations
+
+**Troubleshooting:**
+If seeding fails, ensure JanusGraph is fully started (wait 60-90 seconds after `docker compose up`):
+```powershell
+# Check JanusGraph logs for "Channel started at port 8182"
+docker compose logs janusgraph | Select-String "Channel started"
+```
 
 ### **Step 7: Test Backend APIs**
 
@@ -218,7 +247,7 @@ Skip seeding for now and register users directly through the Flutter app when yo
 Invoke-WebRequest -Uri http://localhost:8000/health
 
 # Test Graph Service
-Invoke-WebRequest -Uri http://localhost:8001/health
+Invoke-WebRequest -Uri http://localhost:8001/health/
 
 # Test Search
 Invoke-WebRequest -Uri http://localhost:8003/health
@@ -226,6 +255,22 @@ Invoke-WebRequest -Uri http://localhost:8003/health
 # View API Documentation
 # Open in browser: http://localhost:8000/docs
 ```
+
+**Run comprehensive API endpoint tests:**
+```powershell
+# Tests all 11 Graph Service endpoints and auto-cleans test data
+python test_graph_api.py
+```
+
+This will test:
+- ✅ Health and readiness endpoints
+- ✅ User creation and retrieval
+- ✅ Startup creation
+- ✅ TRUSTS, FOUNDED, and INVESTED_IN edge creation
+- ✅ Trust score updates
+- ✅ Path discovery
+
+After testing, it automatically cleans up test data to keep your database clean.
 
 ---
 
@@ -391,58 +436,26 @@ docker-compose logs -f redpanda
 
 ```powershell
 # Make sure JanusGraph is fully started
-docker-compose logs janusgraph | Select-String "Channel started"
+docker compose logs janusgraph | Select-String "Channel started"
 
 # Wait 60 seconds after seeing this message, then retry
-python backend\scripts\seed_data.py
+python backend\scripts\seed_data.py --clear
 ```
 
-**If you see error "The traversal source [g] for alias [g] is not configured on the server":**
+**If seeding still fails:**
+1. Check that all Docker containers are healthy: `docker compose ps`
+2. Restart JanusGraph: `docker compose restart janusgraph`
+3. Wait 90 seconds for initialization
+4. Try seeding again: `python backend\scripts\seed_data.py --clear`
 
-**This is a known configuration issue with JanusGraph 1.0.0.** See the complete debugging guide in [JANUSGRAPH_DEBUGGING_GUIDE.md](JANUSGRAPH_DEBUGGING_GUIDE.md).
-
-**Quick Solution Options:**
-
-1. **Option A - Use Graph Service API (Recommended)**
-   - The Graph Service API at `http://localhost:8001` is already configured
-   - It will create vertices/edges when you use the Flutter app
-   - Check API docs at: `http://localhost:8000/docs`
-
-2. **Option B - Use Gremlin Console for Manual Seeding**
-   ```powershell
-   docker exec -it trustgraph-janusgraph ./bin/gremlin.sh
-   ```
-   Then inside the console:
-   ```groovy
-   graph = JanusGraphFactory.open('conf/janusgraph.properties')
-   g = graph.traversal()
-   
-   // Create a test user
-   g.addV('User')
-    .property('user_id', UUID.randomUUID().toString())
-    .property('name', 'Alice Johnson')
-    .property('email', 'alice@startup.com')
-    .property('role_primary', 'founder')
-    .iterate()
-   
-   graph.tx().commit()
-   :exit
-   ```
-
-3. **Option C - Use the Flutter App**
-   - Register users through the app
-   - The Graph Service automatically creates graph data
-
-**Why This Happens:**
-JanusGraph 1.0.0's WebSocket server doesn't automatically expose the traversal source alias 'g' for remote Python clients, even though the graph itself works perfectly. The Graph Service API (which you should use anyway for proper architecture) handles this correctly.
-
-**Alternative: Reset and try again**
+**Clear and reseed database:**
 ```powershell
-# Stop all services
-docker-compose down -v
+# Option 1: Using seed script flag
+python backend\scripts\seed_data.py --clear
 
-# Restart from Step 3
-docker-compose up -d
+# Option 2: Using separate cleanup script
+python clear_graph_data.py
+python backend\scripts\seed_data.py
 ```
 
 ### **Problem: Python packages not found**

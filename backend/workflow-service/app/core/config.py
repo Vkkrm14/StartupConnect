@@ -35,7 +35,12 @@ class Settings(BaseSettings):
     MOBILE_APP_URL_SCHEME: str = "trustgraph://"
     
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000,http://localhost:8002"
+    
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Parse CORS_ORIGINS string into list"""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
     
     class Config:
         env_file = ".env"
