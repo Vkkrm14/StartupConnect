@@ -5,10 +5,11 @@ import logging
 import httpx
 
 from app.core.config import settings
+from app.core.error_handlers import setup_logging, setup_error_handlers, setup_request_logging
 from app.api import auth
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Setup logging
+logger = setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,6 +24,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Setup error handlers and request logging
+setup_error_handlers(app)
+setup_request_logging(app)
 
 # CORS configuration
 app.add_middleware(
