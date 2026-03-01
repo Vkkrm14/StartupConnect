@@ -62,7 +62,7 @@ docker-compose.override.yml
 **frontend/ios/Flutter/App.framework
 **frontend/ios/Flutter/Flutter.framework
 **frontend/ios/Flutter/flutter_export_environment.sh
-**frontend/pubspec.lock
+**/pubspec.lock
 
 # Node modules
 node_modules/
