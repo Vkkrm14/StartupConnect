@@ -52,17 +52,17 @@ docker-compose.override.yml
 *.sqlite3
 
 # Flutter
-frontend/.dart_tool/
-frontend/.flutter-plugins
-frontend/.flutter-plugins-dependencies
-frontend/.packages
-frontend/.pub-cache/
-frontend/.pub/
-frontend/ios/Flutter/flutter_framework.TargetSupport.xcframework
-frontend/ios/Flutter/App.framework
-frontend/ios/Flutter/Flutter.framework
-frontend/ios/Flutter/flutter_export_environment.sh
-frontend/pubspec.lock
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**frontend/ios/Flutter/flutter_framework.TargetSupport.xcframework
+**frontend/ios/Flutter/App.framework
+**frontend/ios/Flutter/Flutter.framework
+**frontend/ios/Flutter/flutter_export_environment.sh
+**frontend/pubspec.lock
 
 # Node modules
 node_modules/
