@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379"
     
     # CORS
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000,http://localhost:8003"
+    CORS_ORIGINS: str = "http://100.70.53.90:3000,http://100.70.53.90:8000,http://100.70.53.90:8003"
     
     @property
     def cors_origins_list(self) -> List[str]:
@@ -27,3 +27,4 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+

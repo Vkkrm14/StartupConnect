@@ -34,11 +34,11 @@ class Settings(BaseSettings):
     GRAPH_SERVICE_URL: str = "http://graph-service:8001"
 
     # App URLs
-    WEB_APP_URL: str = "http://localhost:3000"
+    WEB_APP_URL: str = "http://100.70.53.90:3000"
     MOBILE_APP_URL_SCHEME: str = "trustgraph://"
     
     # CORS
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000,http://localhost:8002"
+    CORS_ORIGINS: str = "http://100.70.53.90:3000,http://100.70.53.90:8000,http://100.70.53.90:8002"
     
     @property
     def cors_origins_list(self) -> List[str]:
@@ -49,3 +49,4 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+

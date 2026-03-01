@@ -197,8 +197,12 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
 
                       const SizedBox(height: 32),
 
-                      // Action Buttons
-                      if (_intro!.status.toLowerCase() == 'pending') ...[
+                      // Action Buttons — only show for the node whose turn it is in the chain
+                      if ((_intro!.status.toLowerCase() == 'pending') &&
+                          _currentUserId != null &&
+                          _intro!.currentNodeIndex > 0 &&
+                          _intro!.currentNodeIndex < _intro!.pathNodes.length &&
+                          _currentUserId == _intro!.pathNodes[_intro!.currentNodeIndex]) ...[
                         Row(
                           children: [
                             Expanded(

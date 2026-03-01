@@ -93,9 +93,12 @@ class _HomeScreenState extends State<HomeScreen> {
               context.go('/search');
               break;
             case 2:
-              context.go('/intros/pending');
+              context.go('/connections');
               break;
             case 3:
+              context.go('/intros/pending');
+              break;
+            case 4:
               context.go('/profile');
               break;
           }
@@ -110,6 +113,11 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.search_outlined),
             selectedIcon: Icon(Icons.search),
             label: 'Search',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.people_outline),
+            selectedIcon: Icon(Icons.people),
+            label: 'Connections',
           ),
           NavigationDestination(
             icon: Icon(Icons.handshake_outlined),

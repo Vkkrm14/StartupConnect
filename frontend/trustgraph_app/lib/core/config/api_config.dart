@@ -3,17 +3,17 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 
 class ApiConfig {
   // Base URL for API - platform aware
-  // Android Emulator: Use 10.0.2.2 to access host machine's localhost
-  // iOS Simulator: Use localhost (works natively)
-  // Chrome/Web: Use localhost
-  // Windows/Desktop: Use localhost
+  // Android Emulator: Use 10.0.2.2 to access host machine's 100.70.53.90
+  // iOS Simulator: Use 100.70.53.90 (works natively)
+  // Chrome/Web: Use 100.70.53.90
+  // Windows/Desktop: Use 100.70.53.90
   static String get baseUrl {
     if (kIsWeb) {
-      return 'http://localhost:8000';
+      return 'http://100.70.53.90:8000';
     } else if (Platform.isAndroid) {
       return 'http://10.0.2.2:8000';  // Android emulator maps to host machine
     } else {
-      return 'http://localhost:8000';
+      return 'http://100.70.53.90:8000';
     }
   }
   

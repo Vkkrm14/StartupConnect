@@ -7,8 +7,8 @@ from gremlin_python.driver.driver_remote_connection import DriverRemoteConnectio
 from gremlin_python.process.anonymous_traversal import traversal
 from gremlin_python.driver.serializer import GraphSONSerializersV3d0
 
-GRAPH_SERVICE_URL = "http://localhost:8001"
-GREMLIN_URL = 'ws://localhost:8182/gremlin'
+GRAPH_SERVICE_URL = "http://100.70.53.90:8001"
+GREMLIN_URL = 'ws://100.70.53.90:8182/gremlin'
 
 def get_user_id_by_name(name: str) -> str:
     """Get user_id from database by name"""
@@ -199,3 +199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

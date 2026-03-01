@@ -201,6 +201,31 @@ class VertexService:
             logger.error(f"❌ Failed to create startup: {str(e)}")
             raise
     
+    async def get_connections(self, user_id: str) -> List[UserResponse]:
+        """Get all users that this user has a TRUSTS edge to (their connections)"""
+        g = graph_client.get_traversal()
+
+        def fetch():
+            try:
+                return (
+                    g.V()
+                    .has('User', 'user_id', user_id)
+                    .out('TRUSTS')
+                    .hasLabel('User')
+                    .valueMap(True)
+                    .toList()
+                )
+            except StopIteration:
+                return []
+
+        try:
+            loop = asyncio.get_event_loop()
+            vertices = await loop.run_in_executor(executor, fetch)
+            return [self._vertex_to_user_response(v) for v in vertices]
+        except Exception as e:
+            logger.error(f"❌ Failed to get connections for {user_id}: {str(e)}")
+            raise
+
     def _vertex_to_user_response(self, vertex_data: dict) -> UserResponse:
         """Convert vertex data to UserResponse"""
         return UserResponse(

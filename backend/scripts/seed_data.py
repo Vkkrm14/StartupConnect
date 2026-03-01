@@ -13,8 +13,8 @@ from gremlin_python.process.anonymous_traversal import traversal
 from gremlin_python.driver.serializer import GraphBinarySerializersV1
 
 # Configuration
-GRAPH_SERVICE_URL = "http://localhost:8001"
-SEARCH_SERVICE_URL = "http://localhost:8003"
+GRAPH_SERVICE_URL = "http://100.70.53.90:8001"
+SEARCH_SERVICE_URL = "http://100.70.53.90:8003"
 API_TIMEOUT = 10
 DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
 
@@ -60,7 +60,7 @@ def check_database_empty() -> bool:
     """Check if JanusGraph database is empty"""
     try:
         connection = DriverRemoteConnection(
-            'ws://localhost:8182/gremlin',
+            'ws://100.70.53.90:8182/gremlin',
             'g',
             message_serializer=GraphBinarySerializersV1()
         )
@@ -80,7 +80,7 @@ def clear_database() -> bool:
     try:
         print("🗑️ Clearing existing data from database...")
         connection = DriverRemoteConnection(
-            'ws://localhost:8182/gremlin',
+            'ws://100.70.53.90:8182/gremlin',
             'g',
             message_serializer=GraphBinarySerializersV1()
         )
@@ -431,9 +431,9 @@ def seed_data():
     
     print("\n✅ Data seeding completed successfully!")
     print("\n💡 Next steps:")
-    print("   - View API docs: http://localhost:8000/docs")
-    print("   - Test Graph Service: http://localhost:8001/health")
-    print("   - Query users: GET http://localhost:8001/api/v1/vertices/users")
+    print("   - View API docs: http://100.70.53.90:8000/docs")
+    print("   - Test Graph Service: http://100.70.53.90:8001/health")
+    print("   - Query users: GET http://100.70.53.90:8001/api/v1/vertices/users")
 
 
 if __name__ == "__main__":
@@ -451,7 +451,7 @@ if __name__ == "__main__":
     if args.clear:
         print("🗑️ --clear flag detected, clearing database...")
         connection = DriverRemoteConnection(
-            'ws://localhost:8182/gremlin',
+            'ws://100.70.53.90:8182/gremlin',
             'g',
             message_serializer=GraphBinarySerializersV1()
         )
@@ -479,4 +479,5 @@ if __name__ == "__main__":
         print(f"\n\n❌ Seeding failed: {e}")
         import traceback
         traceback.print_exc()
+
 

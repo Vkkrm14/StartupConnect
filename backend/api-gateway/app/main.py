@@ -119,6 +119,14 @@ async def get_user(user_id: str):
     )
     return response.json()
 
+@app.get("/api/v1/users/{user_id}/connections")
+async def get_user_connections(user_id: str):
+    """Proxy to graph service - get user connections"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users/{user_id}/connections"
+    )
+    return response.json()
+
 @app.post("/api/v1/trusts")
 async def create_trust_edge(request: Request):
     """Proxy to graph service - create TRUSTS edge"""

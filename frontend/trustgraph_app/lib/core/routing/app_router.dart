@@ -81,6 +81,11 @@ class AppRouter {
         builder: (context, state) => const ConnectionsScreen(),
       ),
       GoRoute(
+        path: '/connections',
+        name: 'connections-tab',
+        builder: (context, state) => const ConnectionsScreen(),
+      ),
+      GoRoute(
         path: '/user/:userId',
         name: 'user-detail',
         builder: (context, state) {

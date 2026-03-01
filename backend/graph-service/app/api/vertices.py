@@ -70,6 +70,18 @@ async def get_user_by_email(email: str):
     
     return user
 
+@router.get("/users/{user_id}/connections", response_model=List[UserResponse])
+async def get_user_connections(user_id: str):
+    """Get all users that this user is connected to via TRUSTS edges"""
+    try:
+        return await vertex_service.get_connections(user_id)
+    except Exception as e:
+        logger.error(f"Get connections error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
 @router.post("/startups", response_model=StartupResponse, status_code=status.HTTP_201_CREATED)
 async def create_startup(startup_data: StartupCreate):
     """Create a new Startup vertex"""

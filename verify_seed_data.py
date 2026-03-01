@@ -10,7 +10,7 @@ def verify_data():
     print("🔍 Connecting to JanusGraph...")
     
     connection = DriverRemoteConnection(
-        'ws://localhost:8182/gremlin',
+        'ws://100.70.53.90:8182/gremlin',
         'g',
         message_serializer=GraphBinarySerializersV1()
     )
@@ -89,3 +89,4 @@ def verify_data():
 
 if __name__ == "__main__":
     verify_data()
+

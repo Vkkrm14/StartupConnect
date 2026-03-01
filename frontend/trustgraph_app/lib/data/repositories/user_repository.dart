@@ -48,7 +48,9 @@ class UserRepository {
   Future<List<UserModel>> getConnections(String userId) async {
     try {
       final response = await _apiClient.get('/api/v1/users/$userId/connections');
-      final List<dynamic> data = response.data['connections'] ?? [];
+      final List<dynamic> data = response.data is List
+          ? response.data
+          : (response.data['connections'] ?? []);
       return data.map((json) => UserModel.fromJson(json)).toList();
     } on DioException catch (e) {
       print('Get connections error: ${ApiClient.getErrorMessage(e)}');

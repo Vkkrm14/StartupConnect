@@ -14,7 +14,7 @@ from gremlin_python.process.graph_traversal import __
 from gremlin_python.driver.serializer import GraphBinarySerializersV1
 
 # Configuration
-BASE_URL = "http://localhost:8001"
+BASE_URL = "http://100.70.53.90:8001"
 API_BASE = f"{BASE_URL}/api/v1"
 
 # Test data from seeding
@@ -365,7 +365,7 @@ def cleanup_test_data():
     
     try:
         connection = DriverRemoteConnection(
-            'ws://localhost:8182/gremlin',
+            'ws://100.70.53.90:8182/gremlin',
             'g',
             message_serializer=GraphBinarySerializersV1()
         )
@@ -549,3 +549,4 @@ def run_all_tests():
 
 if __name__ == "__main__":
     run_all_tests()
+

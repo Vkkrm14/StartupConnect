@@ -1,7 +1,7 @@
 # Remote connection configuration for SESSION-based connections
 # To use with session: :remote connect tinkerpop.server conf/remote-session.yaml session
 
-hosts: [localhost]
+hosts: [100.70.53.90]
 port: 8182
 serializer: {
   className: org.apache.tinkerpop.gremlin.util.ser.GraphSONMessageSerializerV3,
@@ -9,3 +9,4 @@ serializer: {
     ioRegistries: [org.janusgraph.graphdb.tinkerpop.JanusGraphIoRegistry]
   }
 }
+

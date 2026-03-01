@@ -9,14 +9,14 @@ from elasticsearch import Elasticsearch
 import redis
 
 # Service URLs
-JANUSGRAPH_URL = "ws://localhost:8182/gremlin"
-MONGODB_URL = "mongodb://trustgraph:trustgraph_secure_2024@localhost:27017"
-ELASTICSEARCH_URL = "http://localhost:9200"
-REDIS_URL = "redis://localhost:6379"
-API_GATEWAY_URL = "http://localhost:8000"
-GRAPH_SERVICE_URL = "http://localhost:8001"
-WORKFLOW_SERVICE_URL = "http://localhost:8002"
-SEARCH_SERVICE_URL = "http://localhost:8003"
+JANUSGRAPH_URL = "ws://100.70.53.90:8182/gremlin"
+MONGODB_URL = "mongodb://trustgraph:trustgraph_secure_2024@100.70.53.90:27017"
+ELASTICSEARCH_URL = "http://100.70.53.90:9200"
+REDIS_URL = "redis://100.70.53.90:6379"
+API_GATEWAY_URL = "http://100.70.53.90:8000"
+GRAPH_SERVICE_URL = "http://100.70.53.90:8001"
+WORKFLOW_SERVICE_URL = "http://100.70.53.90:8002"
+SEARCH_SERVICE_URL = "http://100.70.53.90:8003"
 
 async def test_janusgraph():
     """Test JanusGraph connection"""
@@ -138,3 +138,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

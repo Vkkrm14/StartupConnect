@@ -241,7 +241,9 @@ async def approve_intro_by_id(request: Request, intro_id: str):
     current_index = intro_doc.get("current_node_index", 0)
     path_nodes = intro_doc.get("path_nodes", [])
     new_index = current_index + 1
-    new_status = IntroStatus.COMPLETED.value if new_index >= len(path_nodes) else IntroStatus.APPROVED.value
+    # Keep pending while chain is in progress; only set approved when ALL nodes have approved
+    chain_complete = new_index >= len(path_nodes)
+    new_status = IntroStatus.APPROVED.value if chain_complete else IntroStatus.PENDING.value
 
     await db.intro_requests.update_one(
         {"intro_id": intro_id},
@@ -251,8 +253,43 @@ async def approve_intro_by_id(request: Request, intro_id: str):
         }
     )
     logger.info(f"✅ Intro {intro_id} approved by {user_id}")
-    if new_status == IntroStatus.COMPLETED.value:
-        return {"message": "Intro request completed!", "status": "completed"}
+    if chain_complete:
+        # Create TRUSTS edges between requester and investor in the graph
+        requester_id = intro_doc.get("requester_id")
+        investor_id = intro_doc.get("investor_id")
+        if requester_id and investor_id:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    # requester → investor
+                    await client.post(
+                        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
+                        json={
+                            "from_user_id": requester_id,
+                            "to_user_id": investor_id,
+                            "trust_score": 0.75,
+                            "strength_score": 0.7,
+                            "domain_tags": intro_doc.get("domain", [])
+                                if isinstance(intro_doc.get("domain"), list)
+                                else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
+                        }
+                    )
+                    # investor → requester (mutual)
+                    await client.post(
+                        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
+                        json={
+                            "from_user_id": investor_id,
+                            "to_user_id": requester_id,
+                            "trust_score": 0.75,
+                            "strength_score": 0.7,
+                            "domain_tags": intro_doc.get("domain", [])
+                                if isinstance(intro_doc.get("domain"), list)
+                                else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
+                        }
+                    )
+                logger.info(f"✅ TRUSTS edges created between {requester_id} ↔ {investor_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not create TRUSTS edge after intro approval: {e}")
+        return {"message": "Introduction fully approved by all parties!", "status": "approved"}
     return {"message": "Approval recorded, forwarded to next node", "next_approver": path_nodes[new_index] if new_index < len(path_nodes) else None}
 
 
