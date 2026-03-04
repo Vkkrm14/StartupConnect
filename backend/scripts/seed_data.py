@@ -10,11 +10,13 @@ import hashlib
 from typing import Dict, List
 from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
 from gremlin_python.process.anonymous_traversal import traversal
+from gremlin_python.process.graph_traversal import __
 from gremlin_python.driver.serializer import GraphBinarySerializersV1
 
 # Configuration
-GRAPH_SERVICE_URL = "http://localhost:8001"
-SEARCH_SERVICE_URL = "http://localhost:8003"
+GRAPH_SERVICE_URL = "http://100.70.53.90:8001"
+SEARCH_SERVICE_URL = "http://100.70.53.90:8003"
+JANUSGRAPH_URL    = "ws://100.70.53.90:8182/gremlin"
 API_TIMEOUT = 10
 DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
 
@@ -46,6 +48,32 @@ STARTUPS = [
 ]
 
 
+# ── Trust score formula (mirrors trust_scoring.py compute_score) ─────────────
+def compute_score(
+    interaction_count: int,
+    successful_intros: int,
+    last_interaction_at: float = None
+) -> float:
+    """Compute trust score from edge counters. Base = 0.0, must be earned."""
+    interaction_bonus = min(interaction_count / 20.0, 1.0) * 0.40
+    success_bonus     = min(successful_intros  / 10.0, 1.0) * 0.40
+    recency_bonus = 0.0
+    if last_interaction_at:
+        days_since = (datetime.utcnow().timestamp() - last_interaction_at) / 86400
+        if days_since <= 90:
+            recency_bonus = (1 - days_since / 90) * 0.20
+    return round(min(interaction_bonus + success_bonus + recency_bonus, 1.0), 4)
+
+
+def get_gremlin_traversal():
+    """Open a direct gremlin connection to JanusGraph."""
+    conn = DriverRemoteConnection(
+        JANUSGRAPH_URL, 'g',
+        message_serializer=GraphBinarySerializersV1()
+    )
+    return traversal().withRemote(conn), conn
+
+
 def check_service_health() -> bool:
     """Check if Graph Service is accessible"""
     try:
@@ -60,7 +88,7 @@ def check_database_empty() -> bool:
     """Check if JanusGraph database is empty"""
     try:
         connection = DriverRemoteConnection(
-            'ws://100.70.53.90:8182/gremlin',
+            JANUSGRAPH_URL,
             'g',
             message_serializer=GraphBinarySerializersV1()
         )
@@ -80,7 +108,7 @@ def clear_database() -> bool:
     try:
         print("🗑️ Clearing existing data from database...")
         connection = DriverRemoteConnection(
-            'ws://100.70.53.90:8182/gremlin',
+            JANUSGRAPH_URL,
             'g',
             message_serializer=GraphBinarySerializersV1()
         )
@@ -202,50 +230,73 @@ def create_startup(startup_data: dict) -> Dict:
         raise
 
 
-def create_trusts_edge(from_user_id: str, to_user_id: str, trust_score: float, domain_tags: List[str] = None) -> Dict:
-    """Create a TRUSTS edge via Graph Service API.
-    trust_score hint drives how many successful_intros to simulate post-creation.
+def create_trusts_edge(
+    from_user_id: str,
+    to_user_id: str,
+    trust_score_hint: float,
+    domain_tags: List[str] = None
+) -> dict:
     """
-    # Higher desired trust score = more interactions seeded
-    interaction_count = random.randint(8, 20) if trust_score >= 0.7 else random.randint(3, 10)
+    Create a TRUSTS edge directly in JanusGraph (no REST dependency).
+    trust_score_hint drives the simulated interaction/intro history so the
+    formula produces a realistic score for the seeded relationship.
+    """
+    # Map the desired trust level to realistic interaction history
+    if trust_score_hint >= 0.85:
+        interaction_count = random.randint(15, 20)
+        successful_intros = random.randint(7, 10)
+    elif trust_score_hint >= 0.70:
+        interaction_count = random.randint(8, 14)
+        successful_intros = random.randint(3, 6)
+    else:
+        interaction_count = random.randint(3, 7)
+        successful_intros = random.randint(1, 3)
 
-    payload = {
-        "from_user_id": from_user_id,
-        "to_user_id": to_user_id,
-        "trust_score": trust_score,          # server ignores this, calculates via formula
-        "strength_score": round(random.uniform(0.5, 0.9), 2),
-        "recency_score": round(random.uniform(0.6, 1.0), 2),
-        "interaction_count": interaction_count,
-        "endorsement_count": random.randint(0, 5),
-        "domain_tags": domain_tags or []
-    }
+    # Simulate a recent interaction (within last 30 days)
+    last_interaction_at = datetime.utcnow().timestamp() - random.randint(1, 30) * 86400
+
+    # Compute the score using the same formula as trust_scoring.py
+    computed_score = compute_score(
+        interaction_count=interaction_count,
+        successful_intros=successful_intros,
+        last_interaction_at=last_interaction_at
+    )
+
+    edge_id    = str(uuid.uuid4())
+    created_at = int(datetime.utcnow().timestamp())
 
     try:
-        response = requests.post(
-            f"{GRAPH_SERVICE_URL}/api/v1/edges/trusts",
-            json=payload,
-            timeout=API_TIMEOUT
-        )
-        response.raise_for_status()
-        edge = response.json()
+        g, conn = get_gremlin_traversal()
+        try:
+            g.V().has('User', 'user_id', from_user_id) \
+                .addE('TRUSTS') \
+                .to(__.V().has('User', 'user_id', to_user_id)) \
+                .property('edge_id',           edge_id) \
+                .property('trust_score',        computed_score) \
+                .property('strength_score',     round(random.uniform(0.5, 0.9), 2)) \
+                .property('recency_score',      round(random.uniform(0.6, 1.0), 2)) \
+                .property('interaction_count',  interaction_count) \
+                .property('successful_intros',  successful_intros) \
+                .property('endorsement_count',  random.randint(0, 5)) \
+                .property('last_interaction_at', last_interaction_at) \
+                .property('created_at',         created_at) \
+                .iterate()
+            if domain_tags:
+                for tag in domain_tags:
+                    g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
+        finally:
+            conn.close()
 
-        # Simulate successful intros so seeded users have earned, realistic trust scores.
-        # Each call increments successful_intros counter AND triggers formula recalculation.
-        intros_to_simulate = (
-            random.randint(6, 10) if trust_score >= 0.85 else
-            random.randint(3, 6)  if trust_score >= 0.70 else
-            random.randint(1, 3)
-        )
-        for _ in range(intros_to_simulate):
-            requests.post(
-                f"{GRAPH_SERVICE_URL}/api/v1/edges/trusts/increment-intros",
-                params={"from_user_id": from_user_id, "to_user_id": to_user_id},
-                timeout=API_TIMEOUT
-            )
-
-        return edge
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to create TRUSTS edge: {e}")
+        return {
+            "edge_id": edge_id,
+            "from_user_id": from_user_id,
+            "to_user_id": to_user_id,
+            "trust_score": computed_score,
+            "interaction_count": interaction_count,
+            "successful_intros": successful_intros,
+        }
+    except Exception as e:
+        print(f"❌ Failed to create TRUSTS edge directly: {e}")
         raise
 
 
@@ -307,13 +358,13 @@ def seed_data():
     print("🌱 Starting data seeding via Graph Service API...")
     print(f"📍 Graph Service URL: {GRAPH_SERVICE_URL}")
     
-    # Check service health
-    print("\n🔍 Checking Graph Service availability...")
+    # Check service health (non-blocking: warn only, edges are seeded directly)
+    print("Checking Graph Service availability...")
     if not check_service_health():
-        print("❌ Graph Service is not available. Make sure it's running:")
-        print("   docker compose ps graph-service")
+        print("Graph Service is not available — users/startups will NOT be created.")
+        print("   Start graph-service first:  docker compose up -d graph-service")
+        print("   Or run with --skip-service to create users directly via gremlin.")
         return
-    
     print("✅ Graph Service is healthy and ready")
     
     # Check if database is empty
@@ -397,14 +448,14 @@ def seed_data():
         ("Grace Chen", "Frank Miller", 0.85, []),
     ]
     
-    for from_name, to_name, trust_score, domain_tags in trust_relationships:
-        create_trusts_edge(
+    for from_name, to_name, trust_score_hint, domain_tags in trust_relationships:
+        edge = create_trusts_edge(
             user_ids[from_name],
             user_ids[to_name],
-            trust_score,
+            trust_score_hint,
             domain_tags
         )
-        print(f"  ✅ {from_name} → {to_name} ({trust_score})")
+        print(f"  ✅ {from_name} → {to_name}  computed={edge['trust_score']:.4f}  (interactions={edge['interaction_count']}, intros={edge['successful_intros']})")
     
     # Create FOUNDED edges
     print("\n🎯 Creating FOUNDED edges...")
@@ -472,7 +523,7 @@ if __name__ == "__main__":
     if args.clear:
         print("🗑️ --clear flag detected, clearing database...")
         connection = DriverRemoteConnection(
-            'ws://100.70.53.90:8182/gremlin',
+            JANUSGRAPH_URL,
             'g',
             message_serializer=GraphBinarySerializersV1()
         )

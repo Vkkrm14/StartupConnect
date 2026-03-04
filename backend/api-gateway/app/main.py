@@ -78,6 +78,12 @@ async def health_check():
     except:
         services_status["search-service"] = False
     
+    try:
+        messaging_response = await http_client.get(f"{settings.MESSAGING_SERVICE_URL}/health")
+        services_status["messaging-service"] = messaging_response.status_code == 200
+    except:
+        services_status["messaging-service"] = False
+    
     all_healthy = all(services_status.values())
     
     return {
@@ -226,3 +232,121 @@ async def search_users(q: str, limit: int = 10):
         params={"q": q, "limit": limit}
     )
     return response.json()
+
+
+# ========================================
+# Messaging Service Proxy Routes
+# ========================================
+
+@app.post("/api/v1/messages/send")
+async def proxy_send_message(request: Request):
+    """Proxy to messaging service - send message"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/messages/send",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.get("/api/v1/messages/{conversation_id}")
+async def proxy_get_messages(request: Request, conversation_id: str, limit: int = 50, before: str = None):
+    """Proxy to messaging service - get conversation messages"""
+    params = {"limit": limit}
+    if before:
+        params["before"] = before
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/messages/{conversation_id}",
+        params=params, headers=headers
+    )
+    return response.json()
+
+@app.post("/api/v1/messages/read-receipt")
+async def proxy_read_receipt(request: Request):
+    """Proxy to messaging service - read receipt"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/messages/read-receipt",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.post("/api/v1/messages/typing")
+async def proxy_typing(request: Request):
+    """Proxy to messaging service - typing indicator"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/messages/typing",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.post("/api/v1/conversations/")
+async def proxy_create_conversation(request: Request):
+    """Proxy to messaging service - create conversation"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/conversations/",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.get("/api/v1/conversations/")
+async def proxy_list_conversations(request: Request, skip: int = 0, limit: int = 50):
+    """Proxy to messaging service - list conversations"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/conversations/",
+        params={"skip": skip, "limit": limit}, headers=headers
+    )
+    return response.json()
+
+@app.get("/api/v1/conversations/{conversation_id}")
+async def proxy_get_conversation(request: Request, conversation_id: str):
+    """Proxy to messaging service - get conversation"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/conversations/{conversation_id}",
+        headers=headers
+    )
+    return response.json()
+
+@app.get("/api/v1/conversations/{conversation_id}/presence")
+async def proxy_conversation_presence(request: Request, conversation_id: str):
+    """Proxy to messaging service - presence status"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/conversations/{conversation_id}/presence",
+        headers=headers
+    )
+    return response.json()
+
+@app.post("/api/v1/conversations/block")
+async def proxy_block_user(request: Request):
+    """Proxy to messaging service - block user"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/conversations/block",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.get("/api/v1/images/download/{conversation_id}/{file_id}")
+async def proxy_download_image(request: Request, conversation_id: str, file_id: str):
+    """Proxy to messaging service - download encrypted image"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/images/download/{conversation_id}/{file_id}",
+        headers=headers
+    )
+    from fastapi.responses import Response
+    return Response(
+        content=response.content,
+        media_type=response.headers.get("content-type", "application/octet-stream"),
+        headers={"Content-Disposition": response.headers.get("content-disposition", "")}
+    )

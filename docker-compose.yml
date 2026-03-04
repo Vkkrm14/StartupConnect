@@ -10,6 +10,7 @@ volumes:
   elasticsearch_data:
   redis_data:
   redpanda_data:
+  message_images:
 
 services:
 
@@ -164,6 +165,7 @@ services:
       GRAPH_SERVICE_URL: http://graph-service:8001
       WORKFLOW_SERVICE_URL: http://workflow-service:8002
       SEARCH_SERVICE_URL: http://search-service:8003
+      MESSAGING_SERVICE_URL: http://messaging-service:8004
       REDIS_URL: redis://redis:6379
       MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
     depends_on:
@@ -258,3 +260,36 @@ services:
       - ./backend/search-service:/app
       - ./backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+
+  messaging-service:
+    build: ./backend/messaging-service
+    container_name: trustgraph-messaging-service
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      ENV: development
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_PORT: 9042
+      CASSANDRA_KEYSPACE: messaging
+      MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+      JWT_SECRET_KEY: your-secret-key-change-in-production
+      UPLOAD_DIR: /app/uploads/messages
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    networks:
+      - trustgraph-network
+    volumes:
+      - ./backend/messaging-service:/app
+      - ./backend/shared:/app/shared
+      - message_images:/app/uploads
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload

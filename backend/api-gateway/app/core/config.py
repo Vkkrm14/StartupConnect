@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     GRAPH_SERVICE_URL: str = "http://graph-service:8001"
     WORKFLOW_SERVICE_URL: str = "http://workflow-service:8002"
     SEARCH_SERVICE_URL: str = "http://search-service:8003"
+    MESSAGING_SERVICE_URL: str = "http://messaging-service:8004"
     
     # Redis Configuration
     REDIS_URL: str = "redis://redis:6379"
