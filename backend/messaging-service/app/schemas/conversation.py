@@ -7,6 +7,13 @@ class CreateConversationRequest(BaseModel):
     participant_id: str = Field(..., description="The other user to start a conversation with")
 
 
+class ParticipantInfo(BaseModel):
+    """Participant information for conversations"""
+    user_id: str
+    name: Optional[str] = None
+    avatar: Optional[str] = None
+
+
 class ConversationResponse(BaseModel):
     conversation_id: str
     participants: List[str]
@@ -15,6 +22,8 @@ class ConversationResponse(BaseModel):
     last_message_preview: Optional[str] = None
     last_message_at: Optional[datetime] = None
     last_message_type: Optional[str] = None
+    # Participant info (populated when fetching conversations)
+    participant_info: Optional[ParticipantInfo] = None
 
 
 class ConversationListResponse(BaseModel):

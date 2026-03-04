@@ -19,6 +19,9 @@ class Settings(BaseSettings):
 
     KAFKA_BOOTSTRAP_SERVERS: str = "redpanda:29092"
 
+    # Graph service for user profile info
+    GRAPH_SERVICE_URL: str = "http://graph-service:8001"
+
     JWT_SECRET_KEY: str = "your-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
 

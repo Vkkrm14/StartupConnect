@@ -36,7 +36,7 @@ class MongoClient:
         await keys.create_index("user_id", unique=True)
 
     def get_db(self):
-        if not self.db:
+        if self.db is None:
             raise RuntimeError("MongoDB not initialized")
         return self.db
 

@@ -3,7 +3,10 @@ import uuid
 from datetime import datetime
 from typing import Optional, List
 
+import httpx
+
 from app.core.mongodb import mongo_client
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,18 @@ class ConversationService:
 
     def _make_conversation_id(self, user_a: str, user_b: str) -> str:
         return ":".join(sorted([user_a, user_b]))
+
+    async def get_user_profile(self, user_id: str) -> Optional[dict]:
+        """Fetch user profile from graph service"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{settings.GRAPH_SERVICE_URL}/api/v1/users/{user_id}")
+                if response.status_code == 200:
+                    return response.json()
+                return None
+        except Exception as e:
+            logger.warning(f"Failed to fetch user profile for {user_id}: {e}")
+            return None
 
     async def get_or_create_conversation(self, user_id: str, participant_id: str) -> dict:
         db = self._get_db()

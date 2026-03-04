@@ -28,7 +28,7 @@ class ConnectionManager:
         pubsub = await redis_manager.subscribe(f"ws:broadcast:{INSTANCE_ID}")
         self._pubsub_task = asyncio.create_task(self._listen_pubsub(pubsub))
 
-        global_pubsub = await redis_manager.client.pubsub()
+        global_pubsub = redis_manager.client.pubsub()
         await global_pubsub.subscribe("ws:broadcast:global")
         asyncio.create_task(self._listen_pubsub(global_pubsub))
 

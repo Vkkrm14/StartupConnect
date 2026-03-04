@@ -11,6 +11,7 @@ from app.schemas.conversation import (
     BlockUserRequest,
     EncryptionKeyUpload,
     EncryptionKeyResponse,
+    ParticipantInfo,
 )
 from app.services.conversation_service import conversation_service
 from app.services.event_producer import event_producer

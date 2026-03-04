@@ -182,22 +182,35 @@ class MessagingProvider extends ChangeNotifier {
     }
   }
 
-  /// Handle read receipt event
+/// Handle read receipt event
   void _handleReadReceipt(Map<String, dynamic> data) {
     final conversationId = data['conversation_id'] as String?;
     final messageId = data['message_id'] as String?;
+    final readerId = data['reader_id'] as String?;
 
     if (conversationId == null || messageId == null) return;
 
+    // Only process read receipts from other users (not our own)
+    if (readerId == _currentUserId) return;
+
     final messages = _messages[conversationId];
     if (messages != null) {
+      // Find the message that was read and mark it and all our previous messages as read
+      bool foundReadMessage = false;
+      
       for (final msg in messages) {
+        // Only process OUR messages (messages we sent)
+        if (msg.senderId != _currentUserId) continue;
+        
+        // Found the message that was read
         if (msg.messageId == messageId) {
           msg.status = MessageStatus.read;
+          foundReadMessage = true;
           break;
         }
-        // Mark all messages up to this one as read
-        if (msg.senderId == _currentUserId) {
+        
+        // Mark all our earlier messages as read too (they were visible at the same time)
+        if (!foundReadMessage && msg.status != MessageStatus.read) {
           msg.status = MessageStatus.read;
         }
       }
