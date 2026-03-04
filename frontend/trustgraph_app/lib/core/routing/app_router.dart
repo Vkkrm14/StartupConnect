@@ -13,6 +13,9 @@ import '../../features/profile/screens/connections_screen.dart';
 import '../../features/intros/screens/pending_intros_screen.dart';
 import '../../features/intros/screens/intro_detail_screen.dart';
 import '../../features/intros/screens/my_requests_screen.dart';
+import '../../features/messaging/presentation/screens/conversations_screen.dart';
+import '../../features/messaging/presentation/screens/chat_screen.dart';
+import '../../features/messaging/data/models/conversation_model.dart';
 
 class AppRouter {
   final ApiClient apiClient;
@@ -117,6 +120,26 @@ class AppRouter {
         name: 'my-requests',
         builder: (context, state) => const MyRequestsScreen(),
       ),
+
+      // Messaging Routes
+      GoRoute(
+        path: '/messages',
+        name: 'messages',
+        builder: (context, state) => const ConversationsScreen(),
+      ),
+      GoRoute(
+        path: '/chat/:conversationId',
+        name: 'chat',
+        builder: (context, state) {
+          final conversationId = state.pathParameters['conversationId']!;
+          final conversation = state.extra as ConversationModel?;
+          return ChatScreen(
+            conversationId: conversationId,
+            conversation: conversation,
+          );
+        },
+      ),
+
       GoRoute(
         path: '/intro/:introId',
         name: 'intro-detail',

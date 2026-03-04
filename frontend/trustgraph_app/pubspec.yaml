@@ -36,6 +36,12 @@ dependencies:
   fl_chart: ^0.66.0
   graphview: ^1.2.0
   
+  # WebSocket
+  web_socket_channel: ^2.4.0
+  
+  # Image Handling
+  image_picker: ^1.0.7
+  
   # Utils
   intl: ^0.19.0
   url_launcher: ^6.2.3

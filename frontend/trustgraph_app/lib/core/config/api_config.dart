@@ -20,6 +20,25 @@ class ApiConfig {
   // API endpoints
   static const String apiVersion = '/api/v1';
   
+  // Messaging service base URL (port 8004)
+  static String get messagingBaseUrl {
+    if (kIsWeb) {
+      return 'http://100.70.53.90:8004';
+    } else if (Platform.isAndroid) {
+      return 'http://10.0.2.2:8004';
+    } else {
+      return 'http://100.70.53.90:8004';
+    }
+  }
+  
+  // Messaging WebSocket URL
+  static String get messagingWsUrl {
+    final base = messagingBaseUrl;
+    return base
+        .replaceFirst('http://', 'ws://')
+        .replaceFirst('https://', 'wss://');
+  }
+  
   // User endpoints
   static const String usersEndpoint = '$apiVersion/users';
   
@@ -33,6 +52,11 @@ class ApiConfig {
   
   // Trust endpoints
   static const String trustsEndpoint = '$apiVersion/trusts';
+  
+  // Messaging endpoints
+  static const String messagesEndpoint = '$apiVersion/messages';
+  static const String conversationsEndpoint = '$apiVersion/conversations';
+  static const String imagesEndpoint = '$apiVersion/images';
   
   // Timeout
   static const Duration timeout = Duration(seconds: 30);

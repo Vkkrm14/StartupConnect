@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
 import '../../../data/repositories/user_repository.dart';
 import '../../../data/providers/api_client.dart';
 import '../../../data/models/user_model.dart';
+import '../../../features/messaging/services/messaging_provider.dart';
 
 class UserDetailScreen extends StatefulWidget {
   final String userId;
@@ -179,17 +181,61 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                       ],
 
                       // Actions
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          context.push(
-                            '/intro-request/${widget.userId}?name=${Uri.encodeComponent(_user!.name)}&role=${_user!.rolePrimary}',
-                          );
-                        },
-                        icon: const Icon(Icons.handshake),
-                        label: const Text('Request Introduction'),
-                        style: ElevatedButton.styleFrom(
-                          minimumSize: const Size(double.infinity, 48),
-                        ),
+                      Row(
+                        children: [
+                          // Message button
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () async {
+                                try {
+                                  final provider = context.read<MessagingProvider>();
+                                  if (!provider.isInitialized) {
+                                    await provider.initialize();
+                                  }
+                                  final conversation = await provider
+                                      .getOrCreateConversation(widget.userId);
+                                  conversation.participantName = _user!.name;
+                                  if (mounted) {
+                                    context.push(
+                                      '/chat/${conversation.conversationId}',
+                                      extra: conversation,
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Error: $e')),
+                                    );
+                                  }
+                                }
+                              },
+                              icon: const Icon(Icons.chat_bubble_outline),
+                              label: const Text('Message'),
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(0, 48),
+                                side: BorderSide(
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          // Intro request button
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () {
+                                context.push(
+                                  '/intro-request/${widget.userId}?name=${Uri.encodeComponent(_user!.name)}&role=${_user!.rolePrimary}',
+                                );
+                              },
+                              icon: const Icon(Icons.handshake),
+                              label: const Text('Intro'),
+                              style: ElevatedButton.styleFrom(
+                                minimumSize: const Size(0, 48),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
