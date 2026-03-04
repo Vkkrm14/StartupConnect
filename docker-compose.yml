@@ -13,9 +13,6 @@ volumes:
 
 services:
 
-  # ========================================
-  # Cassandra (Graph Storage Backend)
-  # ========================================
   cassandra:
     image: cassandra:4.1
     container_name: trustgraph-cassandra
@@ -39,9 +36,6 @@ services:
       retries: 20
       start_period: 120s
 
-  # ========================================
-  # Elasticsearch (Search + Graph Index)
-  # ========================================
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: trustgraph-elasticsearch
@@ -59,48 +53,39 @@ services:
     networks:
       - trustgraph-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://100.70.53.90:9200/_cluster/health || exit 1"]
+      # ✅ Fixed: localhost instead of hardcoded IP + added start_period
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 60s
 
-  # ========================================
-  # JanusGraph Server
-  # ========================================
   janusgraph:
     image: janusgraph/janusgraph:1.0.0
     container_name: trustgraph-janusgraph
     restart: unless-stopped
-
     ports:
       - "8182:8182"
       - "8184:8184"
-
     depends_on:
       cassandra:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-
     environment:
       JAVA_OPTIONS: "-Xms512m -Xmx2g"
     volumes:
-    # Mount EXACT path being loaded
       - ./backend/graph-service/config/janusgraph-cassandra-es.properties:/opt/janusgraph/conf/janusgraph.properties
-
     networks:
       - trustgraph-network
-
     healthcheck:
-      test: ["CMD-SHELL", "bash -lc 'cat < /dev/null > /dev/tcp/100.70.53.90/8182'"]
+      # ✅ Fixed: localhost instead of hardcoded IP
+      test: ["CMD-SHELL", "bash -lc 'cat < /dev/null > /dev/tcp/localhost/8182'"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 120s
 
-  # ========================================
-  # MongoDB (Document DB)
-  # ========================================
   mongodb:
     image: mongo:7.0
     container_name: trustgraph-mongodb
@@ -121,10 +106,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s  # ✅ Added
 
-  # ========================================
-  # Redis (Cache + Queue)
-  # ========================================
   redis:
     image: redis:7.2-alpine
     container_name: trustgraph-redis
@@ -142,9 +125,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ========================================
-  # Redpanda (Kafka)
-  # ========================================
   redpanda:
     image: redpandadata/redpanda:v23.3.7
     container_name: trustgraph-redpanda
@@ -171,10 +151,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 30s  # ✅ Added
 
-  # ========================================
-  # API Gateway
-  # ========================================
   api-gateway:
     build: ./backend/api-gateway
     container_name: trustgraph-api-gateway
@@ -189,9 +167,13 @@ services:
       REDIS_URL: redis://redis:6379
       MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
     depends_on:
-      - redis
-      - mongodb
-      - janusgraph
+      # ✅ Fixed: added service_healthy conditions
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      janusgraph:
+        condition: service_healthy
     networks:
       - trustgraph-network
     volumes:
@@ -199,9 +181,6 @@ services:
       - ./backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-  # ========================================
-  # Graph Service
-  # ========================================
   graph-service:
     build: ./backend/graph-service
     container_name: trustgraph-graph-service
@@ -218,15 +197,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # ✅ Fixed: added missing redpanda dependency
+      redpanda:
+        condition: service_healthy
     networks:
       - trustgraph-network
     volumes:
       - ./backend/graph-service:/app
+      # ✅ Fixed: mount backend/scripts so backfill script is accessible
+      - ./backend/scripts:/app/scripts
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
-  # ========================================
-  # Workflow Service
-  # ========================================
   workflow-service:
     build: ./backend/workflow-service
     container_name: trustgraph-workflow-service
@@ -243,6 +224,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # ✅ Fixed: added missing redpanda dependency
+      redpanda:
+        condition: service_healthy
     networks:
       - trustgraph-network
     volumes:
@@ -250,9 +234,6 @@ services:
       - ./backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
 
-  # ========================================
-  # Search Service
-  # ========================================
   search-service:
     build: ./backend/search-service
     container_name: trustgraph-search-service
@@ -269,10 +250,11 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+      redis:
+        condition: service_healthy  # ✅ Added redis dependency
     networks:
       - trustgraph-network
     volumes:
       - ./backend/search-service:/app
       - ./backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
-
