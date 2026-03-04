@@ -140,11 +140,13 @@ def backfill(janusgraph_url: str):
                 if not outgoing:
                     reputation = 0.0
                 else:
+                    def _v(val, default):
+                        return val[0] if isinstance(val, list) else (val if val is not None else default)
                     avg_trust = sum(
-                        float(e.get('trust_score', [0.0])[0]) for e in outgoing
+                        float(_v(e.get('trust_score'), 0.0)) for e in outgoing
                     ) / len(outgoing)
-                    total_interactions = sum(int(e.get('interaction_count', [0])[0]) for e in outgoing)
-                    total_successes    = sum(int(e.get('successful_intros',  [0])[0]) for e in outgoing)
+                    total_interactions = sum(int(_v(e.get('interaction_count'), 0)) for e in outgoing)
+                    total_successes    = sum(int(_v(e.get('successful_intros'),  0)) for e in outgoing)
                     success_rate = total_successes / total_interactions if total_interactions > 0 else 0.0
                     reputation = round((avg_trust * 0.6) + (success_rate * 0.4), 4)
 

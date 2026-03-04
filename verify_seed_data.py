@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Verify seeded data in JanusGraph - shows trust scores and data counts"""
 
 import sys
@@ -27,7 +27,7 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
     g = traversal().withRemote(connection)
 
     try:
-        # â”€â”€ VERTEX COUNTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── VERTEX COUNTS ─────────────────────────────────────────────────────
         print("\n===== VERTEX COUNTS =====")
         total_vertices = g.V().count().next()
         user_count     = g.V().hasLabel('User').count().next()
@@ -36,7 +36,7 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
         print(f"  Users        : {user_count}")
         print(f"  Startups     : {startup_count}")
 
-        # â”€â”€ EDGE COUNTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EDGE COUNTS ───────────────────────────────────────────────────────
         print("\n===== EDGE COUNTS =====")
         total_edges    = g.E().count().next()
         trusts_count   = g.E().hasLabel('TRUSTS').count().next()
@@ -47,13 +47,10 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
         print(f"  FOUNDED      : {founded_count}")
         print(f"  INVESTED_IN  : {invested_count}")
 
-        # â”€â”€ TRUST SCORES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── TRUST SCORES ──────────────────────────────────────────────────────
         print("\n===== TRUST SCORES (all TRUSTS edges) =====")
 
-        # Read all TRUSTS edges with their properties
-        trust_edges_raw = g.E().hasLabel('TRUSTS').valueMap(True).toList()
-
-        if not trust_edges_raw:
+        if trusts_count == 0:
             print("  (no TRUSTS edges found)")
         else:
             # Also build user_id -> name map
@@ -108,7 +105,7 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
             print(f"  Average score: {sum(scores)/len(scores):.4f}")
             print(f"  Min / Max    : {min(scores):.4f} / {max(scores):.4f}")
 
-        # â”€â”€ USER REPUTATION SCORES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── USER REPUTATION SCORES ────────────────────────────────────────────
         print("\n===== USER REPUTATION SCORES =====")
         rep_data = g.V().hasLabel('User').valueMap('name', 'reputation_score').toList()
         rep_data.sort(key=lambda u: float((u.get('reputation_score') or [0.0])[0]), reverse=True)
@@ -119,7 +116,7 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
             bar = '#' * filled + '-' * (20 - filled)
             print(f"  {name:<22} {rep:.4f}  |{bar}|")
 
-        # â”€â”€ VALIDATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── VALIDATION ────────────────────────────────────────────────────────
         print("\n===== VALIDATION =====")
         expected = {'vertices': 14, 'users': 10, 'startups': 4,
                     'edges': 17, 'trusts': 10, 'founded': 4, 'invested': 3}
@@ -146,4 +143,3 @@ if __name__ == "__main__":
                         help=f"JanusGraph Gremlin URL (default: {DEFAULT_URL})")
     args = parser.parse_args()
     verify_data(args.url)
-
