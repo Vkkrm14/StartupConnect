@@ -37,6 +37,30 @@ async def resolve_names(user_ids: list) -> dict:
             except Exception:
                 names[uid] = uid[:8]
     return names
+
+
+def _build_path_user_ids(intro_doc: dict) -> list:
+    """
+    Build the ordered list of user IDs along the full intro path:
+      requester → path_nodes → investor
+
+    This is passed as `path_user_ids` in the intro_completed Kafka event
+    so that graph-service can increment successful_intros on each consecutive
+    TRUSTS edge and recompute trust scores along the chain.
+    """
+    requester_id = intro_doc.get("requester_id", "")
+    investor_id  = intro_doc.get("investor_id",  "")
+    path_nodes   = intro_doc.get("path_nodes",   [])
+
+    # Build ordered chain, deduplicated while preserving order
+    full_path = [requester_id] + list(path_nodes) + [investor_id]
+    seen = set()
+    result = []
+    for uid in full_path:
+        if uid and uid not in seen:
+            seen.add(uid)
+            result.append(uid)
+    return result
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Initialize Kafka producer
@@ -256,7 +280,12 @@ async def approve_intro_by_id(request: Request, intro_id: str):
     if chain_complete:
         # Create TRUSTS edges between requester and investor in the graph
         requester_id = intro_doc.get("requester_id")
-        investor_id = intro_doc.get("investor_id")
+        investor_id  = intro_doc.get("investor_id")
+        domain_tags  = (
+            intro_doc.get("domain", [])
+            if isinstance(intro_doc.get("domain"), list)
+            else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
+        )
         if requester_id and investor_id:
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
@@ -265,12 +294,10 @@ async def approve_intro_by_id(request: Request, intro_id: str):
                         f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
                         json={
                             "from_user_id": requester_id,
-                            "to_user_id": investor_id,
-                            "trust_score": 0.75,
+                            "to_user_id":   investor_id,
+                            "trust_score":  0.75,
                             "strength_score": 0.7,
-                            "domain_tags": intro_doc.get("domain", [])
-                                if isinstance(intro_doc.get("domain"), list)
-                                else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
+                            "domain_tags":  domain_tags
                         }
                     )
                     # investor → requester (mutual)
@@ -278,17 +305,41 @@ async def approve_intro_by_id(request: Request, intro_id: str):
                         f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
                         json={
                             "from_user_id": investor_id,
-                            "to_user_id": requester_id,
-                            "trust_score": 0.75,
+                            "to_user_id":   requester_id,
+                            "trust_score":  0.75,
                             "strength_score": 0.7,
-                            "domain_tags": intro_doc.get("domain", [])
-                                if isinstance(intro_doc.get("domain"), list)
-                                else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
+                            "domain_tags":  domain_tags
                         }
                     )
                 logger.info(f"✅ TRUSTS edges created between {requester_id} ↔ {investor_id}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not create TRUSTS edge after intro approval: {e}")
+
+        # ── Publish intro_completed so graph-service increments successful_intros ──
+        # path_user_ids = full chain: requester → intermediaries → investor
+        path_user_ids = _build_path_user_ids(intro_doc)
+        if kafka_producer:
+            try:
+                await kafka_producer.publish_event(
+                    topic="intro-events",
+                    event_type="intro_completed",
+                    data={
+                        "intro_id":      intro_id,
+                        "path_user_ids": path_user_ids,
+                        "requester_id":  intro_doc.get("requester_id"),
+                        "investor_id":   intro_doc.get("investor_id"),
+                        "founder_id":    intro_doc.get("founder_id"),
+                    },
+                    key=intro_id
+                )
+                logger.info(
+                    f"✅ Published intro_completed for {intro_id} "
+                    f"(path: {path_user_ids})"
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to publish intro_completed event: {e}")
+        # ─────────────────────────────────────────────────────────────────────────
+
         return {"message": "Introduction fully approved by all parties!", "status": "approved"}
     return {"message": "Approval recorded, forwarded to next node", "next_approver": path_nodes[new_index] if new_index < len(path_nodes) else None}
 
@@ -330,6 +381,31 @@ async def complete_intro_by_id(request: Request, intro_id: str):
         {"$set": {"status": IntroStatus.COMPLETED.value, "updated_at": datetime.utcnow()}}
     )
     logger.info(f"✅ Intro {intro_id} marked as completed")
+
+    # ── Publish intro_completed so graph-service increments successful_intros ──
+    path_user_ids = _build_path_user_ids(intro_doc)
+    if kafka_producer:
+        try:
+            await kafka_producer.publish_event(
+                topic="intro-events",
+                event_type="intro_completed",
+                data={
+                    "intro_id":      intro_id,
+                    "path_user_ids": path_user_ids,
+                    "requester_id":  intro_doc.get("requester_id"),
+                    "investor_id":   intro_doc.get("investor_id"),
+                    "founder_id":    intro_doc.get("founder_id"),
+                },
+                key=intro_id
+            )
+            logger.info(
+                f"✅ Published intro_completed for {intro_id} "
+                f"(path: {path_user_ids})"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to publish intro_completed event: {e}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     return {"message": "Intro request completed"}
 
 
@@ -460,6 +536,29 @@ async def approve_or_decline_intro(request: Request, action: ApprovalAction):
         logger.info(f"✅ Intro {action.intro_id} approved by {action.approver_id}")
         
         if new_status == IntroStatus.COMPLETED.value:
+            # ── Publish intro_completed so graph-service increments successful_intros ──
+            path_user_ids = _build_path_user_ids(intro_doc)
+            if kafka_producer:
+                try:
+                    await kafka_producer.publish_event(
+                        topic="intro-events",
+                        event_type="intro_completed",
+                        data={
+                            "intro_id":      action.intro_id,
+                            "path_user_ids": path_user_ids,
+                            "requester_id":  intro_doc.get("requester_id"),
+                            "investor_id":   intro_doc.get("investor_id"),
+                            "founder_id":    intro_doc.get("founder_id"),
+                        },
+                        key=action.intro_id
+                    )
+                    logger.info(
+                        f"✅ Published intro_completed for {action.intro_id} "
+                        f"(path: {path_user_ids})"
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to publish intro_completed event: {e}")
+            # ─────────────────────────────────────────────────────────────────────────
             return {"message": "Intro request completed!", "status": "completed"}
         else:
             return {

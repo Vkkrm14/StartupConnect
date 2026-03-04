@@ -29,14 +29,18 @@ logger = logging.getLogger(__name__)
 def compute_score(
     interaction_count: int,
     successful_intros: int,
-    last_interaction_at: float = None
+    last_interaction_at: float = None,
+    interaction_decay_factor: float = 1.0
 ) -> float:
     """
-    interaction_bonus : min(interaction_count / 20, 1.0) * 0.40
+    effective_interactions = interaction_count * interaction_decay_factor
+    interaction_bonus : min(effective_interactions / 20, 1.0) * 0.40
     success_bonus     : min(successful_intros  / 10, 1.0) * 0.40
     recency_bonus     : up to 0.20, decays linearly over 90 days
+    interaction_decay_factor is multiplied by 0.6 each day (40% daily decay).
     """
-    interaction_bonus = min(interaction_count / 20.0, 1.0) * 0.40
+    effective_interactions = interaction_count * max(0.0, min(interaction_decay_factor, 1.0))
+    interaction_bonus = min(effective_interactions / 20.0, 1.0) * 0.40
     success_bonus     = min(successful_intros  / 10.0, 1.0) * 0.40
 
     recency_bonus = 0.0
@@ -64,13 +68,15 @@ def backfill(janusgraph_url: str):
         edges = (
             g.E().hasLabel('TRUSTS')
             .project('from_user_id', 'to_user_id', 'old_score',
-                     'interaction_count', 'successful_intros', 'last_interaction_at')
+                     'interaction_count', 'successful_intros',
+                     'last_interaction_at', 'interaction_decay_factor')
             .by(__.outV().values('user_id'))
             .by(__.inV().values('user_id'))
             .by(__.values('trust_score'))
-            .by(__.coalesce(__.values('interaction_count'),  __.constant(0)))
-            .by(__.coalesce(__.values('successful_intros'),  __.constant(0)))
-            .by(__.coalesce(__.values('last_interaction_at'), __.constant(None)))
+            .by(__.coalesce(__.values('interaction_count'),       __.constant(0)))
+            .by(__.coalesce(__.values('successful_intros'),       __.constant(0)))
+            .by(__.coalesce(__.values('last_interaction_at'),     __.constant(None)))
+            .by(__.coalesce(__.values('interaction_decay_factor'),__.constant(1.0)))
             .toList()
         )
 
@@ -92,12 +98,15 @@ def backfill(janusgraph_url: str):
             successful_intros = int(edge['successful_intros'] or 0)
             last_ts_raw       = edge.get('last_interaction_at')
             last_ts           = float(last_ts_raw) if last_ts_raw else None
+            decay_raw         = edge.get('interaction_decay_factor', 1.0)
+            decay_factor      = float(decay_raw) if decay_raw is not None else 1.0
 
             try:
                 new_score = compute_score(
                     interaction_count=interaction_count,
                     successful_intros=successful_intros,
-                    last_interaction_at=last_ts
+                    last_interaction_at=last_ts,
+                    interaction_decay_factor=decay_factor
                 )
 
                 if abs(new_score - old_score) < 0.0001:

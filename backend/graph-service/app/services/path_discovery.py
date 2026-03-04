@@ -11,6 +11,25 @@ from app.schemas.path_schemas import IntroPath, PathNode
 
 logger = logging.getLogger(__name__)
 
+def _compute_live_recency(last_interaction_at) -> float:
+    """
+    Compute recency_score (0.0–1.0) live from a last_interaction_at timestamp.
+    This is called during path scoring so the value is always fresh,
+    instead of relying on the potentially stale stored recency_score property.
+
+    Formula: max(0, 1 - days_since / 90)
+      0 days  → 1.00  |  30 days → 0.67  |  60 days → 0.33  |  90+ → 0.00
+    """
+    if not last_interaction_at:
+        return 1.0  # new / unknown edge — no penalty
+    try:
+        ts = float(last_interaction_at)
+    except (TypeError, ValueError):
+        return 1.0
+    days_since = (datetime.utcnow().timestamp() - ts) / 86400
+    return round(max(0.0, 1.0 - days_since / 90.0), 4)
+
+
 def _extract_value(data, key, default, value_type=str):
     """
     Helper to extract values from Gremlin results that may be in different formats.
@@ -210,9 +229,13 @@ class PathDiscoveryService:
                 edge_props = await loop.run_in_executor(None, get_edge_props)
                 
                 # Extract edge properties (handles both GraphBinary and GraphSON formats)
-                trust_score = _extract_value(edge_props, 'trust_score', 0.5, float)
-                strength_score = _extract_value(edge_props, 'strength_score', 0.5, float)
-                recency_score = _extract_value(edge_props, 'recency_score', 1.0, float)
+                trust_score    = _extract_value(edge_props, 'trust_score',    0.5, float)
+                strength_score = _extract_value(edge_props, 'strength_score',  0.5, float)
+
+                # Compute recency_score LIVE from last_interaction_at
+                # (the stored recency_score property can be stale between daily jobs)
+                last_interaction_raw = _extract_value(edge_props, 'last_interaction_at', None, float)
+                recency_score = _compute_live_recency(last_interaction_raw)
                 
                 # Check for mutual trust (bidirectional)
                 def check_mutual():

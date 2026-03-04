@@ -50,16 +50,17 @@ class MessageEventProducer:
             logger.error(f"Failed to publish to {topic}: {e}")
             return False
 
-    async def emit_message_sent(self, message: dict):
+    async def emit_message_sent(self, message: dict, recipient_id: str = None):
         event = {
             "event_type": "message_sent",
             "timestamp": datetime.utcnow().isoformat(),
             "data": {
-                "message_id": message["message_id"],
+                "message_id":      message["message_id"],
                 "conversation_id": message["conversation_id"],
-                "sender_id": message["sender_id"],
-                "message_type": message["message_type"],
-                "created_at": message["created_at"],
+                "sender_id":       message["sender_id"],
+                "recipient_id":    recipient_id,          # needed for trust score update
+                "message_type":    message["message_type"],
+                "created_at":      message["created_at"],
             },
         }
         self._publish(TOPIC_MESSAGE_EVENTS, message["conversation_id"], event)

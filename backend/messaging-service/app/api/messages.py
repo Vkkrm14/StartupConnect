@@ -70,7 +70,7 @@ async def send_message(
     if recipient:
         await connection_manager.send_to_user(recipient, outbound)
 
-    await event_producer.emit_message_sent(message)
+    await event_producer.emit_message_sent(message, recipient_id=recipient)
     return MessageResponse(**message)
 
 

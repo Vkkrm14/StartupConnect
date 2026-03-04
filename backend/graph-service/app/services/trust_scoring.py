@@ -26,18 +26,26 @@ class TrustScoringService:
     def compute_score(
         interaction_count: int,
         successful_intros: int,
-        last_interaction_at: float = None
+        last_interaction_at: float = None,
+        interaction_decay_factor: float = 1.0
     ) -> float:
         """
         Pure function: compute trust score from raw edge counters.
         No graph query — safe to call before or after edge creation.
 
         Formula:
-          interaction_bonus = min(interaction_count / 20, 1.0) * 0.40
+          effective_interactions = interaction_count * interaction_decay_factor
+          interaction_bonus = min(effective_interactions / 20, 1.0) * 0.40
           success_bonus     = min(successful_intros  / 10, 1.0) * 0.40
           recency_bonus     = up to 0.20, decays linearly over 90 days
+
+        interaction_decay_factor (0.0–1.0):
+          - Starts at 1.0 (full weight) when a message is sent
+          - Multiplied by 0.6 each day (40% reduction per day)
+          - Resets to 1.0 when a new message is received
         """
-        interaction_bonus = min(interaction_count / 20.0, 1.0) * 0.40
+        effective_interactions = interaction_count * max(0.0, min(interaction_decay_factor, 1.0))
+        interaction_bonus = min(effective_interactions / 20.0, 1.0) * 0.40
         success_bonus     = min(successful_intros  / 10.0, 1.0) * 0.40
 
         recency_bonus = 0.0
@@ -50,7 +58,30 @@ class TrustScoringService:
             min(interaction_bonus + success_bonus + recency_bonus, 1.0),
             4
         )
-    
+
+    @staticmethod
+    def compute_recency_score(last_interaction_at: float = None) -> float:
+        """
+        Standalone helper: compute the recency_score edge property (0.0–1.0).
+
+        Distinct from recency_bonus in compute_score():
+          - recency_bonus  : contributes up to +0.20 to trust_score
+          - recency_score  : 0–1.0 multiplier used by path_discovery scoring
+
+        Formula (same decay window as recency_bonus):
+          recency_score = max(0, 1 - days_since / 90)
+
+          days_since → recency_score
+          0          → 1.00   (just interacted)
+          30 days    → 0.67
+          60 days    → 0.33
+          90+ days   → 0.00   (fully decayed)
+        """
+        if not last_interaction_at:
+            return 1.0  # brand-new edge — no interaction yet, no penalty
+        days_since = (datetime.utcnow().timestamp() - last_interaction_at) / 86400
+        return round(max(0.0, 1.0 - days_since / 90.0), 4)
+
     async def calculate_trust_score(
         self,
         from_user_id: str,
@@ -71,15 +102,18 @@ class TrustScoringService:
                 .next()
             )
 
-            interaction_count    = edge_data.get('interaction_count',  [0])[0]
-            successful_intros    = edge_data.get('successful_intros',  [0])[0]
-            last_interaction_raw = edge_data.get('last_interaction_at', [None])[0]
-            last_interaction_at  = float(last_interaction_raw) if last_interaction_raw else None
+            interaction_count        = edge_data.get('interaction_count',       [0])[0]
+            successful_intros        = edge_data.get('successful_intros',       [0])[0]
+            last_interaction_raw     = edge_data.get('last_interaction_at',     [None])[0]
+            decay_factor_raw         = edge_data.get('interaction_decay_factor',[1.0])[0]
+            last_interaction_at      = float(last_interaction_raw) if last_interaction_raw else None
+            interaction_decay_factor = float(decay_factor_raw) if decay_factor_raw is not None else 1.0
 
             return self.compute_score(
                 interaction_count=interaction_count,
                 successful_intros=successful_intros,
-                last_interaction_at=last_interaction_at
+                last_interaction_at=last_interaction_at,
+                interaction_decay_factor=interaction_decay_factor
             )
 
         except StopIteration:
@@ -88,6 +122,191 @@ class TrustScoringService:
         except Exception as e:
             logger.error(f"❌ Failed to calculate trust score: {str(e)}")
             return 0.0
+
+    async def record_interaction(
+        self,
+        from_user_id: str,
+        to_user_id: str,
+    ) -> dict:
+        """
+        Called when two connected users exchange a message.
+
+        Behaviour:
+          - Only acts if a TRUSTS edge already exists (trust must be explicitly created).
+          - Rate-limited to 1 interaction credit per hour per direction pair.
+          - Increments interaction_count and resets interaction_decay_factor to 1.0
+            (fresh daily activity; decay job will reduce it overnight).
+          - Recomputes and persists trust_score + reputation_score.
+        """
+        g = graph_client.get_traversal()
+
+        try:
+            edge_data = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .valueMap(True)
+                .next()
+            )
+        except StopIteration:
+            return {"status": "no_edge",
+                    "message": f"No TRUSTS edge from {from_user_id} to {to_user_id}"}
+        except Exception as e:
+            logger.error(f"❌ record_interaction lookup failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+        # ── Rate-limit: 1 credit per hour ─────────────────────────────────────
+        last_raw = edge_data.get('last_interaction_at', [None])[0]
+        if last_raw:
+            hours_since = (datetime.utcnow().timestamp() - float(last_raw)) / 3600
+            if hours_since < 1.0:
+                return {
+                    "status": "rate_limited",
+                    "retry_after_hours": round(1.0 - hours_since, 2)
+                }
+
+        now = datetime.utcnow().timestamp()
+        new_count     = edge_data.get('interaction_count', [0])[0] + 1
+        intros        = edge_data.get('successful_intros', [0])[0]
+
+        # recency_score = 1.0 on interaction (just interacted — full freshness)
+        new_recency = self.compute_recency_score(now)  # days_since=0 → 1.0
+
+        # ── Update edge counters; reset decay factor + recency to 1.0 ─────────
+        (
+            g.V().has('User', 'user_id', from_user_id)
+            .outE('TRUSTS')
+            .where(__.inV().has('User', 'user_id', to_user_id))
+            .property('interaction_count',       new_count)
+            .property('last_interaction_at',      now)
+            .property('interaction_decay_factor', 1.0)
+            .property('recency_score',            new_recency)
+            .iterate()
+        )
+
+        # ── Recompute trust score ─────────────────────────────────────────────
+        new_trust = self.compute_score(
+            interaction_count=new_count,
+            successful_intros=intros,
+            last_interaction_at=now,
+            interaction_decay_factor=1.0
+        )
+        (
+            g.V().has('User', 'user_id', from_user_id)
+            .outE('TRUSTS')
+            .where(__.inV().has('User', 'user_id', to_user_id))
+            .property('trust_score', new_trust)
+            .iterate()
+        )
+
+        await self.update_reputation_score(from_user_id)
+
+        logger.info(
+            f"✅ Interaction recorded {from_user_id}→{to_user_id}: "
+            f"count={new_count}, trust={new_trust:.4f}"
+        )
+        return {
+            "status":                  "updated",
+            "from_user_id":            from_user_id,
+            "to_user_id":              to_user_id,
+            "new_interaction_count":   new_count,
+            "new_trust_score":         new_trust,
+        }
+
+    async def daily_interaction_decay(self) -> int:
+        """
+        Scheduled job — run once at the start of each day.
+
+        Reduces the interaction_decay_factor by 40% for every TRUSTS edge
+        that did NOT receive a message today (i.e. last_interaction_at < today midnight).
+        Then recomputes and persists the affected trust scores.
+
+        Formula applied per edge:
+          interaction_decay_factor *= 0.6   (60% retained, 40% lost)
+
+        Effect on interaction_bonus:
+          If factor was 1.0 → becomes 0.60  (−40%)
+          If factor was 0.6 → becomes 0.36  (−40% again)
+          Asymptotically reaches 0 — a silent pair eventually loses all
+          interaction bonus, even if their raw interaction_count is high.
+
+        Edges that received a message today are SKIPPED (their factor was
+        already reset to 1.0 by record_interaction).
+        """
+        g = graph_client.get_traversal()
+
+        today_midnight = datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).timestamp()
+
+        try:
+            all_edges = (
+                g.E().hasLabel('TRUSTS')
+                .project('edge_id', 'from_uid', 'to_uid',
+                         'interaction_count', 'successful_intros',
+                         'last_interaction_at', 'interaction_decay_factor')
+                .by(__.id())
+                .by(__.outV().values('user_id'))
+                .by(__.inV().values('user_id'))
+                .by(__.coalesce(__.values('interaction_count'),   __.constant(0)))
+                .by(__.coalesce(__.values('successful_intros'),   __.constant(0)))
+                .by(__.coalesce(__.values('last_interaction_at'), __.constant(0.0)))
+                .by(__.coalesce(__.values('interaction_decay_factor'), __.constant(1.0)))
+                .toList()
+            )
+
+            decayed_count = 0
+            for edge in all_edges:
+                last_ts = float(edge.get('last_interaction_at', 0) or 0)
+
+                # Skip edges that had activity since today midnight
+                if last_ts >= today_midnight:
+                    continue
+
+                old_factor  = float(edge.get('interaction_decay_factor', 1.0) or 1.0)
+                new_factor  = round(old_factor * 0.6, 6)   # 40% reduction
+
+                from_uid    = str(edge['from_uid'])
+                to_uid      = str(edge['to_uid'])
+                count       = int(edge.get('interaction_count', 0) or 0)
+                intros      = int(edge.get('successful_intros', 0) or 0)
+                last_ts_val = last_ts if last_ts > 0 else None
+
+                # Persist decayed factor
+                (
+                    g.V().has('User', 'user_id', from_uid)
+                    .outE('TRUSTS')
+                    .where(__.inV().has('User', 'user_id', to_uid))
+                    .property('interaction_decay_factor', new_factor)
+                    .iterate()
+                )
+
+                # Recompute and persist trust score
+                new_trust = self.compute_score(
+                    interaction_count=count,
+                    successful_intros=intros,
+                    last_interaction_at=last_ts_val,
+                    interaction_decay_factor=new_factor
+                )
+                (
+                    g.V().has('User', 'user_id', from_uid)
+                    .outE('TRUSTS')
+                    .where(__.inV().has('User', 'user_id', to_uid))
+                    .property('trust_score', new_trust)
+                    .iterate()
+                )
+
+                decayed_count += 1
+
+            logger.info(
+                f"✅ Daily interaction decay applied to {decayed_count} edges "
+                f"(factor ×0.6, 40% reduction)"
+            )
+            return decayed_count
+
+        except Exception as e:
+            logger.error(f"❌ daily_interaction_decay failed: {e}")
+            return 0
     
     async def update_reputation_score(self, user_id: str) -> float:
         """
@@ -117,11 +336,13 @@ class TrustScoringService:
                     e.get('trust_score', [0.5])[0] for e in outgoing_edges
                 ) / len(outgoing_edges)
                 
-                # Successful intro rate
-                total_intros = sum(e.get('interaction_count', [0])[0] for e in outgoing_edges)
-                successful = sum(e.get('successful_intros', [0])[0] for e in outgoing_edges)
+                # Successful intro rate:
+                # success_rate = total_successful_intros / total_interactions
+                # Measures: "what fraction of my interactions led to a completed intro?"
+                total_interactions = sum(e.get('interaction_count', [0])[0] for e in outgoing_edges)
+                total_successful   = sum(e.get('successful_intros',  [0])[0] for e in outgoing_edges)
                 
-                success_rate = successful / total_intros if total_intros > 0 else 0.5
+                success_rate = total_successful / total_interactions if total_interactions > 0 else 0.0
                 
                 # Weighted reputation
                 reputation = (avg_trust * 0.6) + (success_rate * 0.4)
@@ -140,33 +361,80 @@ class TrustScoringService:
     
     async def decay_trust_scores(self, days_threshold: int = 180):
         """
-        Apply time decay to trust scores for inactive relationships
-        
-        Edges with no interaction for > days_threshold get reduced recency_score
+        Scheduled job — run once daily alongside daily_interaction_decay.
+
+        Recomputes recency_score for ALL TRUSTS edges using the live
+        compute_recency_score() formula (not a binary flip to 0.1):
+
+          recency_score = max(0, 1 - days_since_last_interaction / 90)
+
+        Edges that have had NO interaction within `days_threshold` (default 180)
+        are additionally hard-floored at 0.0 to signal a dead relationship.
+
+        Also recomputes trust_score on any edge whose recency_score changed,
+        keeping the stored value in sync with reality.
         """
         g = graph_client.get_traversal()
-        threshold_timestamp = (
-            datetime.utcnow() - timedelta(days=days_threshold)
-        ).timestamp()
-        
+
         try:
-            # Find and update stale edges
-            stale_edges = (
+            all_edges = (
                 g.E().hasLabel('TRUSTS')
-                .has('last_interaction_at', P.lt(threshold_timestamp))
+                .project('from_uid', 'to_uid',
+                         'last_interaction_at', 'interaction_count',
+                         'successful_intros',   'interaction_decay_factor')
+                .by(__.outV().values('user_id'))
+                .by(__.inV().values('user_id'))
+                .by(__.coalesce(__.values('last_interaction_at'), __.constant(None)))
+                .by(__.coalesce(__.values('interaction_count'),   __.constant(0)))
+                .by(__.coalesce(__.values('successful_intros'),   __.constant(0)))
+                .by(__.coalesce(__.values('interaction_decay_factor'), __.constant(1.0)))
                 .toList()
             )
-            
-            # Update each stale edge
-            for edge in stale_edges:
-                edge_id = edge.id
-                g.E(edge_id).property('recency_score', 0.1).iterate()
-            
-            decayed_count = len(stale_edges)
-            
-            logger.info(f"✅ Applied decay to {decayed_count} stale trust edges")
-            return decayed_count
-            
+
+            threshold_ts = (
+                datetime.utcnow() - timedelta(days=days_threshold)
+            ).timestamp()
+
+            updated_count = 0
+            for edge in all_edges:
+                last_ts_raw = edge.get('last_interaction_at')
+                last_ts     = float(last_ts_raw) if last_ts_raw else None
+                from_uid    = str(edge['from_uid'])
+                to_uid      = str(edge['to_uid'])
+
+                # Compute fresh recency_score using live formula
+                new_recency = self.compute_recency_score(last_ts)
+
+                # Hard-floor dead relationships to 0.0
+                if last_ts and last_ts < threshold_ts:
+                    new_recency = 0.0
+
+                # Recompute trust_score with updated recency
+                count        = int(edge.get('interaction_count',        0) or 0)
+                intros       = int(edge.get('successful_intros',        0) or 0)
+                decay_factor = float(edge.get('interaction_decay_factor', 1.0) or 1.0)
+                new_trust    = self.compute_score(
+                    interaction_count=count,
+                    successful_intros=intros,
+                    last_interaction_at=last_ts,
+                    interaction_decay_factor=decay_factor
+                )
+
+                (
+                    g.V().has('User', 'user_id', from_uid)
+                    .outE('TRUSTS')
+                    .where(__.inV().has('User', 'user_id', to_uid))
+                    .property('recency_score', new_recency)
+                    .property('trust_score',   new_trust)
+                    .iterate()
+                )
+                updated_count += 1
+
+            logger.info(
+                f"✅ decay_trust_scores: {updated_count} edges recency scores refreshed"
+            )
+            return updated_count
+
         except Exception as e:
             logger.error(f"❌ Failed to decay trust scores: {str(e)}")
             return 0
@@ -259,11 +527,14 @@ class TrustScoringService:
                 current_intros = edge_data.get('successful_intros', [0])[0]
                 
                 # First update counters so formula uses fresh values
+                now_ts      = datetime.utcnow().timestamp()
+                new_recency = self.compute_recency_score(now_ts)  # 1.0 (just interacted)
                 g.V().has('User', 'user_id', from_id) \
                     .outE('TRUSTS') \
                     .where(__.inV().has('User', 'user_id', to_id)) \
-                    .property('successful_intros', current_intros + 1) \
-                    .property('last_interaction_at', datetime.utcnow().timestamp()) \
+                    .property('successful_intros',    current_intros + 1) \
+                    .property('last_interaction_at',  now_ts) \
+                    .property('recency_score',         new_recency) \
                     .iterate()
                 
                 # Recalculate score using the formula (not a flat boost)

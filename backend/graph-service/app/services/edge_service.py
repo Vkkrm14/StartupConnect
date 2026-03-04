@@ -46,6 +46,7 @@ class EdgeService:
                 .property('interaction_count', edge_data.interaction_count) \
                 .property('endorsement_count', edge_data.endorsement_count) \
                 .property('successful_intros', 0) \
+                .property('interaction_decay_factor', 1.0) \
                 .property('created_at', int(created_at.timestamp())) \
                 .iterate()
             

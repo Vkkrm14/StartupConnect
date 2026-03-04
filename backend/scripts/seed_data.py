@@ -52,10 +52,12 @@ STARTUPS = [
 def compute_score(
     interaction_count: int,
     successful_intros: int,
-    last_interaction_at: float = None
+    last_interaction_at: float = None,
+    interaction_decay_factor: float = 1.0
 ) -> float:
     """Compute trust score from edge counters. Base = 0.0, must be earned."""
-    interaction_bonus = min(interaction_count / 20.0, 1.0) * 0.40
+    effective_interactions = interaction_count * max(0.0, min(interaction_decay_factor, 1.0))
+    interaction_bonus = min(effective_interactions / 20.0, 1.0) * 0.40
     success_bonus     = min(successful_intros  / 10.0, 1.0) * 0.40
     recency_bonus = 0.0
     if last_interaction_at:
@@ -277,6 +279,7 @@ def create_trusts_edge(
                 .property('recency_score',      round(random.uniform(0.6, 1.0), 2)) \
                 .property('interaction_count',  interaction_count) \
                 .property('successful_intros',  successful_intros) \
+                .property('interaction_decay_factor', 1.0) \
                 .property('endorsement_count',  random.randint(0, 5)) \
                 .property('last_interaction_at', last_interaction_at) \
                 .property('created_at',         created_at) \
