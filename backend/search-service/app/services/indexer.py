@@ -32,7 +32,7 @@ class IndexerService:
                 "domain_tags": user_data.get("domain_tags", []),
                 "geography": user_data.get("geography"),
                 "experience_years": user_data.get("experience_years", 0),
-                "reputation_score": user_data.get("reputation_score", 0.5),
+                "reputation_score": user_data.get("reputation_score", 0.0),
                 "verification_status": user_data.get("verification_status", "unverified"),
                 "bio": user_data.get("bio", ""),
                 "created_at": user_data.get("created_at", datetime.utcnow().isoformat())
@@ -127,7 +127,7 @@ class IndexerService:
                     "role_primary": user["role_primary"],
                     "domain_tags": user.get("domain_tags", []),
                     "geography": user.get("geography"),
-                    "reputation_score": user.get("reputation_score", 0.5),
+                    "reputation_score": user.get("reputation_score", 0.0),
                     "created_at": user.get("created_at", datetime.utcnow().isoformat())
                 }
                 documents.append(doc)

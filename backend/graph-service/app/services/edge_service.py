@@ -13,6 +13,7 @@ from app.schemas.edge_schemas import (
     FoundedEdgeCreate, FoundedEdgeResponse,
     InvestedInEdgeCreate, InvestedInEdgeResponse
 )
+from app.services.trust_scoring import trust_scoring_service
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,19 @@ class EdgeService:
         created_at = datetime.utcnow()
         
         try:
+            # Calculate score from the provided counters — never trust raw input
+            calculated_score = trust_scoring_service.compute_score(
+                interaction_count=edge_data.interaction_count,
+                successful_intros=edge_data.successful_intros if hasattr(edge_data, 'successful_intros') else 0,
+                last_interaction_at=None   # brand-new edge; no recency yet
+            )
+
             # Create edge directly using has() steps (avoids materializing vertex objects)
             g.V().has('User', 'user_id', edge_data.from_user_id) \
                 .addE('TRUSTS') \
                 .to(__.V().has('User', 'user_id', edge_data.to_user_id)) \
                 .property('edge_id', edge_id) \
-                .property('trust_score', edge_data.trust_score) \
+                .property('trust_score', calculated_score) \
                 .property('strength_score', edge_data.strength_score) \
                 .property('recency_score', edge_data.recency_score) \
                 .property('interaction_count', edge_data.interaction_count) \
@@ -54,7 +62,7 @@ class EdgeService:
                 edge_id=edge_id,
                 from_user_id=edge_data.from_user_id,
                 to_user_id=edge_data.to_user_id,
-                trust_score=edge_data.trust_score,
+                trust_score=calculated_score,
                 strength_score=edge_data.strength_score,
                 recency_score=edge_data.recency_score,
                 interaction_count=edge_data.interaction_count,
@@ -75,12 +83,23 @@ class EdgeService:
         self,
         from_user_id: str,
         to_user_id: str,
-        new_trust_score: float
+        new_trust_score: Optional[float] = None
     ) -> bool:
-        """Update trust score on an existing edge"""
+        """Update trust score on an existing edge.
+        If new_trust_score is None, recalculates using the scoring formula.
+        """
         g = graph_client.get_traversal()
         
         try:
+            # Auto-recalculate if no score explicitly provided
+            if new_trust_score is None:
+                new_trust_score = await trust_scoring_service.calculate_trust_score(
+                    from_user_id, to_user_id
+                )
+                logger.info(
+                    f"🔄 Auto-recalculated trust score: {from_user_id} → {to_user_id} = {new_trust_score}"
+                )
+
             # Find and update edge
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
@@ -118,13 +137,17 @@ class EdgeService:
             
             current_count = edge_data.get('successful_intros', [0])[0]
             
-            # Update count
+            # Update count and last interaction timestamp
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('successful_intros', current_count + 1) \
+                .property('last_interaction_at', int(datetime.utcnow().timestamp())) \
                 .iterate()
-            
+
+            # Sync trust score using formula now that counters have changed
+            await self.update_trust_score(from_user_id, to_user_id)
+
             logger.info(
                 f"✅ Incremented successful intros: {from_user_id} → {to_user_id}"
             )

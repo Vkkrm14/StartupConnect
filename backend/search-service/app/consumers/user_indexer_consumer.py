@@ -27,7 +27,7 @@ async def handle_user_created(data: dict):
             "role_primary": data.get("role_primary", ""),
             "domain_tags": data.get("domain_tags", []),
             "geography": data.get("geography"),
-            "reputation_score": data.get("reputation_score", 0.5),
+            "reputation_score": data.get("reputation_score", 0.0),
         }
         
         # Index in Elasticsearch

@@ -13,14 +13,43 @@ logger = logging.getLogger(__name__)
 class TrustScoringService:
     """
     Service for calculating and updating trust scores
-    
+
     Trust scoring factors:
-    - Interaction count
-    - Successful intro rate
-    - Recency of interactions
-    - Mutual connections
-    - Domain expertise overlap
+    - Interaction count      → up to +0.40
+    - Successful intro rate  → up to +0.40
+    - Recency of interaction → up to +0.20 (90-day window)
+
+    Trust must be EARNED — base score is 0.0 for brand-new relationships.
     """
+
+    @staticmethod
+    def compute_score(
+        interaction_count: int,
+        successful_intros: int,
+        last_interaction_at: float = None
+    ) -> float:
+        """
+        Pure function: compute trust score from raw edge counters.
+        No graph query — safe to call before or after edge creation.
+
+        Formula:
+          interaction_bonus = min(interaction_count / 20, 1.0) * 0.40
+          success_bonus     = min(successful_intros  / 10, 1.0) * 0.40
+          recency_bonus     = up to 0.20, decays linearly over 90 days
+        """
+        interaction_bonus = min(interaction_count / 20.0, 1.0) * 0.40
+        success_bonus     = min(successful_intros  / 10.0, 1.0) * 0.40
+
+        recency_bonus = 0.0
+        if last_interaction_at:
+            days_since = (datetime.utcnow().timestamp() - last_interaction_at) / 86400
+            if days_since <= 90:
+                recency_bonus = (1 - days_since / 90) * 0.20
+
+        return round(
+            min(interaction_bonus + success_bonus + recency_bonus, 1.0),
+            4
+        )
     
     async def calculate_trust_score(
         self,
@@ -28,15 +57,12 @@ class TrustScoringService:
         to_user_id: str
     ) -> float:
         """
-        Calculate trust score between two users
-        
-        Formula:
-        trust_score = base_trust + interaction_bonus + success_bonus + recency_bonus
+        Read edge counters from JanusGraph and return the computed trust score.
+        Delegates the actual formula to the pure compute_score() method.
         """
         g = graph_client.get_traversal()
-        
+
         try:
-            # Get edge if exists
             edge_data = (
                 g.V().has('User', 'user_id', from_user_id)
                 .outE('TRUSTS')
@@ -44,44 +70,24 @@ class TrustScoringService:
                 .valueMap(True)
                 .next()
             )
-            
-            interaction_count = edge_data.get('interaction_count', [0])[0]
-            successful_intros = edge_data.get('successful_intros', [0])[0]
-            last_interaction = edge_data.get('last_interaction_at', [0])[0]
-            
-            # Base trust
-            base_trust = 0.3
-            
-            # Interaction bonus (0-0.3)
-            interaction_bonus = min(interaction_count / 20.0 * 0.3, 0.3)
-            
-            # Success bonus (0-0.3)
-            if interaction_count > 0:
-                success_rate = successful_intros / interaction_count
-                success_bonus = success_rate * 0.3
-            else:
-                success_bonus = 0.0
-            
-            # Recency bonus (0-0.1)
-            if last_interaction > 0:
-                days_since = (datetime.utcnow().timestamp() - last_interaction) / 86400
-                recency_bonus = max(0, 0.1 * (1 - days_since / 180))  # Decay over 180 days
-            else:
-                recency_bonus = 0.0
-            
-            trust_score = min(
-                base_trust + interaction_bonus + success_bonus + recency_bonus,
-                1.0
+
+            interaction_count    = edge_data.get('interaction_count',  [0])[0]
+            successful_intros    = edge_data.get('successful_intros',  [0])[0]
+            last_interaction_raw = edge_data.get('last_interaction_at', [None])[0]
+            last_interaction_at  = float(last_interaction_raw) if last_interaction_raw else None
+
+            return self.compute_score(
+                interaction_count=interaction_count,
+                successful_intros=successful_intros,
+                last_interaction_at=last_interaction_at
             )
-            
-            return round(trust_score, 3)
-            
+
         except StopIteration:
-            # No edge exists, return default
-            return 0.5
+            # No edge exists yet — zero trust, must be earned
+            return 0.0
         except Exception as e:
             logger.error(f"❌ Failed to calculate trust score: {str(e)}")
-            return 0.5
+            return 0.0
     
     async def update_reputation_score(self, user_id: str) -> float:
         """
@@ -104,7 +110,7 @@ class TrustScoringService:
             )
             
             if not outgoing_edges:
-                reputation = 0.5
+                reputation = 0.0
             else:
                 # Average trust score
                 avg_trust = sum(
@@ -250,19 +256,24 @@ class TrustScoringService:
                     .next()
                 )
                 
-                current_score = edge_data.get('trust_score', [0.5])[0]
                 current_intros = edge_data.get('successful_intros', [0])[0]
                 
-                # Apply boost
-                new_score = min(current_score + boost_amount, 1.0)
+                # First update counters so formula uses fresh values
+                g.V().has('User', 'user_id', from_id) \
+                    .outE('TRUSTS') \
+                    .where(__.inV().has('User', 'user_id', to_id)) \
+                    .property('successful_intros', current_intros + 1) \
+                    .property('last_interaction_at', datetime.utcnow().timestamp()) \
+                    .iterate()
                 
-                # Update edge
+                # Recalculate score using the formula (not a flat boost)
+                new_score = await self.calculate_trust_score(from_id, to_id)
+                
+                # Persist the recalculated score
                 g.V().has('User', 'user_id', from_id) \
                     .outE('TRUSTS') \
                     .where(__.inV().has('User', 'user_id', to_id)) \
                     .property('trust_score', new_score) \
-                    .property('successful_intros', current_intros + 1) \
-                    .property('last_interaction_at', datetime.utcnow().timestamp()) \
                     .iterate()
                 
                 updated_count += 1

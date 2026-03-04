@@ -188,7 +188,7 @@ class PathDiscoveryService:
                 user_id=_extract_value(vertex_data, 'user_id', user_id, str),
                 name=_extract_value(vertex_data, 'name', 'Unknown', str),
                 role=_extract_value(vertex_data, 'role_primary', '', str),
-                reputation_score=_extract_value(vertex_data, 'reputation_score', 0.5, float)
+                reputation_score=_extract_value(vertex_data, 'reputation_score', 0.0, float)
             )
             nodes.append(node)
             

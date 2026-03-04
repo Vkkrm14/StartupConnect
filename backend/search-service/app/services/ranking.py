@@ -94,7 +94,7 @@ class RankingService:
         for result in ranked_results:
             original_score = result.get("score", 1.0)
             proximity_score = result.get("proximity_score", 0.0)
-            reputation = result.get("reputation_score", 0.5)
+            reputation = result.get("reputation_score", 0.0)
             
             # Weighted combination
             result["final_score"] = (

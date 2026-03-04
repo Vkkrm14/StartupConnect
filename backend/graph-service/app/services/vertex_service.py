@@ -33,7 +33,9 @@ def _create_user_sync(user_data: UserCreate, user_id: str, created_at: datetime)
             .property('role_primary', user_data.role_primary.value) \
             .property('geography', user_data.geography or '') \
             .property('experience_years', user_data.experience_years) \
-            .property('reputation_score', 0.5) \
+            .property('reputation_score', 0.0) \
+            .property('is_verified', False) \
+            .property('profile_completeness', 0.0) \
             .property('verification_status', user_data.verification_status.value) \
             .property('created_at', int(created_at.timestamp())) \
             .iterate()
@@ -60,7 +62,7 @@ def _create_user_sync(user_data: UserCreate, user_id: str, created_at: datetime)
             domain_tags=user_data.domain_tags,
             geography=user_data.geography,
             experience_years=user_data.experience_years,
-            reputation_score=0.5,
+            reputation_score=0.0,
             verification_status=user_data.verification_status,
             created_at=created_at
         )
@@ -238,7 +240,7 @@ class VertexService:
             domain_tags=vertex_data.get('domain_tags', []),
             geography=vertex_data.get('geography', [''])[0],
             experience_years=vertex_data.get('experience_years', [0])[0],
-            reputation_score=float(vertex_data.get('reputation_score', [0.5])[0]),
+            reputation_score=float(vertex_data.get('reputation_score', [0.0])[0]),
             verification_status=vertex_data.get('verification_status', ['unverified'])[0],
             created_at=datetime.fromtimestamp(vertex_data.get('created_at', [0])[0])
         )

@@ -13,8 +13,8 @@ from gremlin_python.process.anonymous_traversal import traversal
 from gremlin_python.driver.serializer import GraphBinarySerializersV1
 
 # Configuration
-GRAPH_SERVICE_URL = "http://100.70.53.90:8001"
-SEARCH_SERVICE_URL = "http://100.70.53.90:8003"
+GRAPH_SERVICE_URL = "http://localhost:8001"
+SEARCH_SERVICE_URL = "http://localhost:8003"
 API_TIMEOUT = 10
 DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
 
@@ -163,7 +163,7 @@ def index_user_in_search(user: Dict, role: str, user_info: dict) -> bool:
             "domain_tags": user.get("domain_tags", user_info.get("domain", [])),
             "geography": user.get("geography", user_info.get("geography", "")),
             "experience_years": user.get("experience_years", 0),
-            "reputation_score": user.get("reputation_score", 0.5),
+            "reputation_score": user.get("reputation_score", 0.0),
             "verification_status": user.get("verification_status", "verified"),
             "bio": user.get("bio", ""),
             "created_at": user.get("created_at", "")
@@ -203,18 +203,23 @@ def create_startup(startup_data: dict) -> Dict:
 
 
 def create_trusts_edge(from_user_id: str, to_user_id: str, trust_score: float, domain_tags: List[str] = None) -> Dict:
-    """Create a TRUSTS edge via Graph Service API"""
+    """Create a TRUSTS edge via Graph Service API.
+    trust_score hint drives how many successful_intros to simulate post-creation.
+    """
+    # Higher desired trust score = more interactions seeded
+    interaction_count = random.randint(8, 20) if trust_score >= 0.7 else random.randint(3, 10)
+
     payload = {
         "from_user_id": from_user_id,
         "to_user_id": to_user_id,
-        "trust_score": trust_score,
+        "trust_score": trust_score,          # server ignores this, calculates via formula
         "strength_score": round(random.uniform(0.5, 0.9), 2),
         "recency_score": round(random.uniform(0.6, 1.0), 2),
-        "interaction_count": random.randint(5, 20),
+        "interaction_count": interaction_count,
         "endorsement_count": random.randint(0, 5),
         "domain_tags": domain_tags or []
     }
-    
+
     try:
         response = requests.post(
             f"{GRAPH_SERVICE_URL}/api/v1/edges/trusts",
@@ -222,7 +227,23 @@ def create_trusts_edge(from_user_id: str, to_user_id: str, trust_score: float, d
             timeout=API_TIMEOUT
         )
         response.raise_for_status()
-        return response.json()
+        edge = response.json()
+
+        # Simulate successful intros so seeded users have earned, realistic trust scores.
+        # Each call increments successful_intros counter AND triggers formula recalculation.
+        intros_to_simulate = (
+            random.randint(6, 10) if trust_score >= 0.85 else
+            random.randint(3, 6)  if trust_score >= 0.70 else
+            random.randint(1, 3)
+        )
+        for _ in range(intros_to_simulate):
+            requests.post(
+                f"{GRAPH_SERVICE_URL}/api/v1/edges/trusts/increment-intros",
+                params={"from_user_id": from_user_id, "to_user_id": to_user_id},
+                timeout=API_TIMEOUT
+            )
+
+        return edge
     except requests.exceptions.RequestException as e:
         print(f"❌ Failed to create TRUSTS edge: {e}")
         raise

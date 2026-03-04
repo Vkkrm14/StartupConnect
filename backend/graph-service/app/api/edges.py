@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 import logging
+from typing import Optional
 
 from app.schemas.edge_schemas import (
     TrustsEdgeCreate, TrustsEdgeResponse,
@@ -7,6 +8,7 @@ from app.schemas.edge_schemas import (
     InvestedInEdgeCreate, InvestedInEdgeResponse
 )
 from app.services.edge_service import EdgeService
+from app.services.trust_scoring import trust_scoring_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -43,10 +45,12 @@ async def create_trusts_edge(edge_data: TrustsEdgeCreate):
 async def update_trust_score(
     from_user_id: str,
     to_user_id: str,
-    new_score: float
+    new_score: Optional[float] = None
 ):
-    """Update trust score on existing edge"""
-    if not (0 <= new_score <= 1):
+    """Update trust score on existing edge.
+    Omit new_score to auto-recalculate using the scoring formula.
+    """
+    if new_score is not None and not (0 <= new_score <= 1):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Trust score must be between 0 and 1"
@@ -60,7 +64,8 @@ async def update_trust_score(
             detail="TRUSTS edge not found"
         )
     
-    return {"message": "Trust score updated", "new_score": new_score}
+    label = "recalculated" if new_score is None else "updated"
+    return {"message": f"Trust score {label}", "new_score": new_score}
 
 @router.post("/trusts/increment-intros")
 async def increment_successful_intros(from_user_id: str, to_user_id: str):
@@ -74,6 +79,31 @@ async def increment_successful_intros(from_user_id: str, to_user_id: str):
         )
     
     return {"message": "Successful intro count incremented"}
+
+
+@router.get("/trusts/score/{from_user_id}/{to_user_id}")
+async def get_trust_score(from_user_id: str, to_user_id: str):
+    """Get the calculated trust score between two users"""
+    score = await trust_scoring_service.calculate_trust_score(from_user_id, to_user_id)
+    return {
+        "from_user_id": from_user_id,
+        "to_user_id": to_user_id,
+        "trust_score": score,
+        "trust_level": "high" if score >= 0.7 else "medium" if score >= 0.3 else "low"
+    }
+
+
+@router.get("/trusts/reputation/{user_id}")
+async def get_reputation(user_id: str):
+    """Get and refresh the reputation score for a user"""
+    reputation = await trust_scoring_service.update_reputation_score(user_id)
+    return {"user_id": user_id, "reputation_score": reputation}
+
+
+@router.get("/trusts/centrality/{user_id}")
+async def get_centrality(user_id: str):
+    """Get network centrality metrics for a user"""
+    return await trust_scoring_service.calculate_network_centrality(user_id)
 
 @router.post("/founded", response_model=FoundedEdgeResponse, status_code=status.HTTP_201_CREATED)
 async def create_founded_edge(edge_data: FoundedEdgeCreate):

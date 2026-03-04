@@ -113,7 +113,7 @@ class SearchService:
                     "domain_tags": source.get("domain_tags", []),
                     "geography": source.get("geography"),
                     "experience_years": source.get("experience_years", 0),
-                    "reputation_score": source.get("reputation_score", 0.5),
+                    "reputation_score": source.get("reputation_score", 0.0),
                     "verification_status": source.get("verification_status", "unverified"),
                     "bio": source.get("bio", ""),
                     "created_at": source.get("created_at", datetime.utcnow().isoformat()),
