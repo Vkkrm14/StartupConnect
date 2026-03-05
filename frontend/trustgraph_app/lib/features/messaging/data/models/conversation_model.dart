@@ -62,7 +62,7 @@ class ConversationModel {
   String getOtherParticipant(String currentUserId) {
     return participants.firstWhere(
       (p) => p != currentUserId,
-      orElse: () => participants.first,
+      orElse: () => '',
     );
   }
 

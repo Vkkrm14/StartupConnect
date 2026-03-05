@@ -296,6 +296,33 @@ class ApiClient {
     }
   }
 
+  /// Upload file from bytes (for web support)
+  Future<Response> uploadFileBytes(
+    String path,
+    List<int> fileBytes,
+    String filename, {
+    Map<String, dynamic>? data,
+    ProgressCallback? onSendProgress,
+  }) async {
+    try {
+      final formData = FormData.fromMap({
+        'file': MultipartFile.fromBytes(
+          fileBytes,
+          filename: filename,
+        ),
+        ...?data,
+      });
+
+      return await _dio.post(
+        path,
+        data: formData,
+        onSendProgress: onSendProgress,
+      );
+    } catch (e) {
+      rethrow;
+    }
+  }
+
   /// Download file
   Future<Response> downloadFile(
     String urlPath,

@@ -20,7 +20,7 @@ JANUSGRAPH_URL    = "ws://100.70.53.90:8182/gremlin"
 API_TIMEOUT = 10
 DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
 
-# Sample data
+# Sample data0
 FOUNDERS = [
     {"name": "Alice Johnson", "email": "alice@startup.com", "domain": ["fintech", "saas"], "geography": "San Francisco"},
     {"name": "Bob Smith", "email": "bob@techco.com", "domain": ["healthtech", "ai-ml"], "geography": "New York"},

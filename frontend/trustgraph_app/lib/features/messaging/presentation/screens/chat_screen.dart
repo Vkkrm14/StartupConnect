@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../data/models/models.dart';
 import '../../services/messaging_provider.dart';
 import '../widgets/widgets.dart';
@@ -315,13 +317,16 @@ class _ChatScreenState extends State<ChatScreen>
                   children: [
                     if (showDate)
                       _buildDateSeparator(message.createdAt, isDark),
-                    MessageBubble(
-                      message: message,
-                      isMine: isMine,
-                      index: index,
-                      onImageTap: message.isImage
-                          ? () => _openImageViewer(message)
-                          : null,
+                    Align(
+                      alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+                      child: MessageBubble(
+                        message: message,
+                        isMine: isMine,
+                        index: index,
+                        onImageTap: message.isImage
+                            ? () => _openImageViewer(message)
+                            : null,
+                      ),
                     ),
                   ],
                 );
@@ -499,28 +504,18 @@ class _ChatScreenState extends State<ChatScreen>
                 icon: Icons.camera_alt_rounded,
                 label: 'Camera',
                 color: const Color(0xFF6366F1),
-                onTap: () {
+                onTap: () async {
                   Navigator.pop(context);
-                  // Camera picker integration would go here
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Camera requires image_picker package'),
-                    ),
-                  );
+                  await _pickImage(ImageSource.camera);
                 },
               ),
               _buildImageOption(
                 icon: Icons.photo_library_rounded,
                 label: 'Gallery',
                 color: const Color(0xFF10B981),
-                onTap: () {
+                onTap: () async {
                   Navigator.pop(context);
-                  // Gallery picker integration would go here
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Gallery requires image_picker package'),
-                    ),
-                  );
+                  await _pickImage(ImageSource.gallery);
                 },
               ),
             ],
@@ -562,6 +557,45 @@ class _ChatScreenState extends State<ChatScreen>
         ],
       ),
     );
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(source: source);
+
+      if (pickedFile != null && mounted) {
+        final provider = context.read<MessagingProvider>();
+        
+        // On web, read bytes; on native, use file path
+        if (kIsWeb) {
+          final bytes = await pickedFile.readAsBytes();
+          await provider.sendImageMessageBytes(
+            widget.conversationId,
+            bytes,
+            pickedFile.name,
+          );
+        } else {
+          await provider.sendImageMessage(
+            widget.conversationId,
+            pickedFile.path,
+          );
+        }
+
+        // Scroll to bottom to show new message
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (_scrollController.hasClients) {
+            _scrollToBottom();
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error picking image: $e')),
+        );
+      }
+    }
   }
 
   void _openImageViewer(MessageModel message) {

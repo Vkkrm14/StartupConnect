@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../../../../data/providers/api_client.dart';
 import '../models/models.dart';
 
@@ -45,16 +46,18 @@ class MessagingRepository {
 
   /// Get a single conversation
   Future<ConversationModel> getConversation(String conversationId) async {
+    final encodedId = Uri.encodeComponent(conversationId);
     final response = await _apiClient.get(
-      '$_messagingBase/conversations/$conversationId',
+      '$_messagingBase/conversations/$encodedId',
     );
     return ConversationModel.fromJson(response.data);
   }
 
   /// Get presence status for a user in a conversation
   Future<Map<String, dynamic>> getPresence(String conversationId) async {
+    final encodedId = Uri.encodeComponent(conversationId);
     final response = await _apiClient.get(
-      '$_messagingBase/conversations/$conversationId/presence',
+      '$_messagingBase/conversations/$encodedId/presence',
     );
     return response.data;
   }
@@ -90,11 +93,12 @@ class MessagingRepository {
     int limit = 50,
     String? before, // ISO timestamp cursor
   }) async {
+    final encodedId = Uri.encodeComponent(conversationId);
     final queryParams = <String, dynamic>{'limit': limit};
     if (before != null) queryParams['before'] = before;
 
     final response = await _apiClient.get(
-      '$_messagingBase/messages/$conversationId',
+      '$_messagingBase/messages/$encodedId',
       queryParameters: queryParams,
     );
     final data = response.data;
@@ -155,11 +159,17 @@ class MessagingRepository {
     try {
       final response = await _apiClient.get(
         '$_messagingBase/conversations/encryption-key/$userId',
+        options: Options(
+          validateStatus: (status) => status != null && (status < 400 || status == 404),
+        ),
       );
-      return response.data['public_key'];
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 404) return null;
-      rethrow;
+      if (response.statusCode == 404) {
+        return null;
+      }
+      return response.data['public_key'] as String?;
+    } catch (e) {
+      debugPrint('[Messaging] Error getting encryption key: $e');
+      return null;
     }
   }
 
@@ -172,9 +182,25 @@ class MessagingRepository {
     String conversationId,
     String filePath,
   ) async {
+    final encodedId = Uri.encodeComponent(conversationId);
     final response = await _apiClient.uploadFile(
-      '$_messagingBase/images/upload/$conversationId',
+      '$_messagingBase/images/upload/$encodedId',
       filePath,
+    );
+    return response.data;
+  }
+
+  /// Upload an encrypted image from bytes (for web support)
+  Future<Map<String, dynamic>> uploadImageBytes(
+    String conversationId,
+    List<int> imageBytes,
+    String filename,
+  ) async {
+    final encodedId = Uri.encodeComponent(conversationId);
+    final response = await _apiClient.uploadFileBytes(
+      '$_messagingBase/images/upload/$encodedId',
+      imageBytes,
+      filename,
     );
     return response.data;
   }
@@ -184,8 +210,10 @@ class MessagingRepository {
     String conversationId,
     String fileId,
   ) async {
+    final encodedConvId = Uri.encodeComponent(conversationId);
+    final encodedFileId = Uri.encodeComponent(fileId);
     final response = await _apiClient.get(
-      '$_messagingBase/images/download/$conversationId/$fileId',
+      '$_messagingBase/images/download/$encodedConvId/$encodedFileId',
       options: Options(responseType: ResponseType.bytes),
     );
     return Uint8List.fromList(response.data);

@@ -236,21 +236,22 @@ class WebSocketService {
 
   /// Schedule reconnection with exponential backoff
   void _scheduleReconnect() {
-    if (_reconnectAttempts >= _maxReconnectAttempts) {
-      debugPrint('[WS] Max reconnect attempts reached');
+    _reconnectAttempts++;
+    
+    if (_reconnectAttempts > _maxReconnectAttempts) {
+      debugPrint('[WS] Max reconnect attempts ($_maxReconnectAttempts) reached, giving up');
       return;
     }
 
     _reconnectTimer?.cancel();
     final delay = Duration(
-      seconds: (1 << _reconnectAttempts).clamp(1, 30),
+      seconds: (1 << (_reconnectAttempts - 1)).clamp(1, 30),
     );
 
     debugPrint('[WS] Reconnecting in ${delay.inSeconds}s '
-        '(attempt ${_reconnectAttempts + 1})');
+        '(attempt $_reconnectAttempts/$_maxReconnectAttempts)');
 
     _reconnectTimer = Timer(delay, () {
-      _reconnectAttempts++;
       connect();
     });
   }
@@ -271,8 +272,8 @@ class WebSocketService {
   }
 
   /// Dispose all resources
-  void dispose() {
-    disconnect();
-    _eventController.close();
+  Future<void> dispose() async {
+    await disconnect();
+    await _eventController.close();
   }
 }

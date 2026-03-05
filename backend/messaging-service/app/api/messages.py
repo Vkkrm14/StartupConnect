@@ -66,7 +66,8 @@ async def send_message(
     )
 
     outbound = {"event": "new_message", **message}
-    await connection_manager.send_to_user(current_user.user_id, outbound)
+    # Only push to recipient — sender is managing state via optimistic UI + REST response.
+    # Pushing to sender would cause a redundant new_message echo they'd have to filter out.
     if recipient:
         await connection_manager.send_to_user(recipient, outbound)
 
