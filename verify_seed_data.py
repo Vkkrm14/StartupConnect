@@ -15,6 +15,20 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 DEFAULT_URL = 'ws://100.70.53.90:8182/gremlin'
 
 
+def _v(val, default):
+    """
+    Safe property extractor for Gremlin valueMap results.
+    GraphBinarySerializersV1 returns plain scalars  : val = 0.75
+    GraphSON / older drivers return list-wrapped    : val = [0.75]
+    This handles both so the script works regardless of serializer.
+    """
+    if val is None:
+        return default
+    if isinstance(val, list):
+        return val[0] if val else default
+    return val
+
+
 def verify_data(janusgraph_url: str = DEFAULT_URL):
     """Connect to JanusGraph and verify data + trust scores"""
     print(f"[*] Connecting to JanusGraph at {janusgraph_url}...")
@@ -57,8 +71,8 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
             all_users = g.V().hasLabel('User').valueMap('user_id', 'name').toList()
             id_to_name = {}
             for u in all_users:
-                uid  = u.get('user_id', [None])[0] or u.get('user_id', '?')
-                name = u.get('name', ['?'])[0]
+                uid  = _v(u.get('user_id'), None)
+                name = _v(u.get('name'), '?')
                 if uid:
                     id_to_name[str(uid)] = name
 
@@ -74,9 +88,9 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
             )
             for e in raw_edges_full:
                 props       = e.get('props', {})
-                trust_score = float((props.get('trust_score') or [0.0])[0])
-                int_count   = int((props.get('interaction_count') or [0])[0])
-                intros      = int((props.get('successful_intros') or [0])[0])
+                trust_score = float(_v(props.get('trust_score'), 0.0))
+                int_count   = int(_v(props.get('interaction_count'), 0))
+                intros      = int(_v(props.get('successful_intros'), 0))
                 from_uid    = str(e['from_uid'])
                 to_uid      = str(e['to_uid'])
                 trust_edges.append({
@@ -108,10 +122,10 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
         # ── USER REPUTATION SCORES ────────────────────────────────────────────
         print("\n===== USER REPUTATION SCORES =====")
         rep_data = g.V().hasLabel('User').valueMap('name', 'reputation_score').toList()
-        rep_data.sort(key=lambda u: float((u.get('reputation_score') or [0.0])[0]), reverse=True)
+        rep_data.sort(key=lambda u: float(_v(u.get('reputation_score'), 0.0)), reverse=True)
         for u in rep_data:
-            name = (u.get('name') or ['?'])[0]
-            rep  = float((u.get('reputation_score') or [0.0])[0])
+            name = _v(u.get('name'), '?')
+            rep  = float(_v(u.get('reputation_score'), 0.0))
             filled = int(rep * 20)
             bar = '#' * filled + '-' * (20 - filled)
             print(f"  {name:<22} {rep:.4f}  |{bar}|")
@@ -119,7 +133,7 @@ def verify_data(janusgraph_url: str = DEFAULT_URL):
         # ── VALIDATION ────────────────────────────────────────────────────────
         print("\n===== VALIDATION =====")
         expected = {'vertices': 14, 'users': 10, 'startups': 4,
-                    'edges': 17, 'trusts': 10, 'founded': 4, 'invested': 3}
+                    'edges': 19, 'trusts': 12, 'founded': 4, 'invested': 3}
         actual   = {'vertices': total_vertices, 'users': user_count, 'startups': startup_count,
                     'edges': total_edges, 'trusts': trusts_count, 'founded': founded_count,
                     'invested': invested_count}
