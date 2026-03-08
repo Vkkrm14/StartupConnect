@@ -50,8 +50,13 @@ class ApiConfig {
   static const String searchUsersEndpoint = '$apiVersion/search/users';
   static const String searchStartupsEndpoint = '$apiVersion/search/startups';
   
-  // Trust endpoints
+  // Trust / Connection endpoints
   static const String trustsEndpoint = '$apiVersion/trusts';
+  static const String edgesEndpoint = '$apiVersion/edges';
+  static const String edgesTrustsEndpoint = '$apiVersion/edges/trusts';
+  static const String edgesTrustsAcceptEndpoint = '$apiVersion/edges/trusts/accept';
+  static const String edgesTrustsRejectEndpoint = '$apiVersion/edges/trusts/reject';
+  static const String edgesTrustsPendingEndpoint = '$apiVersion/edges/trusts/pending';
   
   // Messaging endpoints
   static const String messagesEndpoint = '$apiVersion/messages';

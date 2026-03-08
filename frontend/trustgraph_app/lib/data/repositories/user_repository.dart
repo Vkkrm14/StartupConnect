@@ -1,12 +1,19 @@
 import 'package:dio/dio.dart';
 import '../providers/api_client.dart';
 import '../models/user_model.dart';
+import '../repositories/connection_repository.dart';
 
 /// User Repository
 class UserRepository {
   final ApiClient _apiClient;
+  late final ConnectionRepository _connectionRepository;
 
-  UserRepository(this._apiClient);
+  UserRepository(this._apiClient) {
+    _connectionRepository = ConnectionRepository(_apiClient);
+  }
+
+  /// Access the connection repository for edge operations
+  ConnectionRepository get connections => _connectionRepository;
 
   /// Get user by ID
   Future<UserModel?> getUserById(String userId) async {

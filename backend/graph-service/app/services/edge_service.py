@@ -1,6 +1,6 @@
 """Edge CRUD operations"""
 
-from typing import Optional
+from typing import Optional, List
 import uuid
 from datetime import datetime
 import logging
@@ -17,12 +17,91 @@ from app.services.trust_scoring import trust_scoring_service
 
 logger = logging.getLogger(__name__)
 
+# Role-based connection rules — defines which roles can initiate trust edges
+ALLOWED_TRUST_CONNECTIONS = {
+    'founder':   ['investor', 'mentor', 'connector', 'founder'],
+    'investor':  ['founder', 'connector', 'investor'],
+    'mentor':    ['founder', 'connector'],
+    'connector': ['founder', 'investor', 'mentor', 'connector'],
+}
+
+# Cooldown (seconds) between automatic trust score recalculations
+RECALC_COOLDOWN_SECONDS = 3600  # 1 hour
+
+
 class EdgeService:
     """Service for managing graph edges"""
+
+    # ── Helper: normalize Gremlin valueMap output ──
+    @staticmethod
+    def _normalize_edge(raw: dict) -> dict:
+        """Convert Gremlin valueMap output to a clean, JSON-serialisable dict.
+        Gremlin wraps every property value in a list, e.g.
+        {'trust_score': [0.7], T.id: 123}  →  {'trust_score': 0.7, 'id': 123}
+        """
+        result = {}
+        for k, v in raw.items():
+            key = k.name if hasattr(k, 'name') else str(k)
+            # Unwrap single-element lists
+            if isinstance(v, list) and len(v) == 1:
+                result[key] = v[0]
+            else:
+                result[key] = v
+        return result
+
+    # ── Helper: validate role-based connection rules ──
+    def _validate_trust_roles(self, from_user_id: str, to_user_id: str) -> None:
+        """Raise ValueError if the sender's role is not allowed to connect to the receiver's role."""
+        g = graph_client.get_traversal()
+        try:
+            from_role_list = (
+                g.V().has('User', 'user_id', from_user_id)
+                .values('role_primary')
+                .toList()
+            )
+            to_role_list = (
+                g.V().has('User', 'user_id', to_user_id)
+                .values('role_primary')
+                .toList()
+            )
+            if not from_role_list or not to_role_list:
+                raise ValueError("One or both users not found")
+
+            from_role = from_role_list[0].lower()
+            to_role = to_role_list[0].lower()
+
+            allowed = ALLOWED_TRUST_CONNECTIONS.get(from_role, [])
+            if to_role not in allowed:
+                raise ValueError(
+                    f"Role '{from_role}' cannot send trust requests to role '{to_role}'"
+                )
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(f"⚠️ Role validation skipped (non-fatal): {e}")
     
     async def create_trusts_edge(self, edge_data: TrustsEdgeCreate) -> TrustsEdgeResponse:
         """Create a TRUSTS edge between two users"""
         g = graph_client.get_traversal()
+        
+        # ── Self-loop prevention ──
+        if edge_data.from_user_id == edge_data.to_user_id:
+            raise ValueError("User cannot create a trust edge to themselves")
+        
+        # ── Role-based connection validation ──
+        self._validate_trust_roles(edge_data.from_user_id, edge_data.to_user_id)
+        
+        # ── Duplicate edge prevention ──
+        existing = (
+            g.V().has('User', 'user_id', edge_data.from_user_id)
+            .outE('TRUSTS')
+            .where(__.inV().has('User', 'user_id', edge_data.to_user_id))
+            .toList()
+        )
+        if existing:
+            raise ValueError(
+                f"TRUSTS edge already exists from {edge_data.from_user_id} to {edge_data.to_user_id}"
+            )
         
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
@@ -35,20 +114,41 @@ class EdgeService:
                 last_interaction_at=None   # brand-new edge; no recency yet
             )
 
-            # Create edge directly using has() steps (avoids materializing vertex objects)
-            g.V().has('User', 'user_id', edge_data.from_user_id) \
-                .addE('TRUSTS') \
-                .to(__.V().has('User', 'user_id', edge_data.to_user_id)) \
-                .property('edge_id', edge_id) \
-                .property('trust_score', calculated_score) \
-                .property('strength_score', edge_data.strength_score) \
-                .property('recency_score', edge_data.recency_score) \
-                .property('interaction_count', edge_data.interaction_count) \
-                .property('endorsement_count', edge_data.endorsement_count) \
-                .property('successful_intros', 0) \
-                .property('interaction_decay_factor', 1.0) \
-                .property('created_at', int(created_at.timestamp())) \
-                .iterate()
+            # ── Mutual trust detection ──
+            reverse_exists = (
+                g.V().has('User', 'user_id', edge_data.to_user_id)
+                .outE('TRUSTS')
+                .where(__.inV().has('User', 'user_id', edge_data.from_user_id))
+                .toList()
+            )
+            is_mutual = len(reverse_exists) > 0
+
+            # ── Atomic edge creation with mutual flag sync via sideEffect ──
+            traversal = (
+                g.V().has('User', 'user_id', edge_data.from_user_id)
+                .addE('TRUSTS')
+                .to(__.V().has('User', 'user_id', edge_data.to_user_id))
+                .property('edge_id', edge_id)
+                .property('trust_score', calculated_score)
+                .property('strength_score', edge_data.strength_score)
+                .property('recency_score', edge_data.recency_score)
+                .property('interaction_count', edge_data.interaction_count)
+                .property('endorsement_count', edge_data.endorsement_count)
+                .property('successful_intros', 0)
+                .property('interaction_decay_factor', 1.0)
+                .property('is_mutual', is_mutual)
+                .property('status', 'pending')
+                .property('created_at', int(created_at.timestamp()))
+            )
+            # If reverse edge exists, atomically mark it as mutual in the same traversal
+            if is_mutual:
+                traversal = traversal.sideEffect(
+                    __.V().has('User', 'user_id', edge_data.to_user_id)
+                    .outE('TRUSTS')
+                    .where(__.inV().has('User', 'user_id', edge_data.from_user_id))
+                    .property('is_mutual', True)
+                )
+            traversal.iterate()
             
             # Add domain tags to the edge
             if edge_data.domain_tags:
@@ -56,7 +156,7 @@ class EdgeService:
                     g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
             
             logger.info(
-                f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id}"
+                f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id} (mutual={is_mutual})"
             )
             
             return TrustsEdgeResponse(
@@ -70,6 +170,8 @@ class EdgeService:
                 endorsement_count=edge_data.endorsement_count,
                 domain_tags=edge_data.domain_tags,
                 successful_intros=0,
+                is_mutual=is_mutual,
+                status='pending',
                 last_interaction_at=None,
                 created_at=created_at
             )
@@ -79,6 +181,176 @@ class EdgeService:
         except Exception as e:
             logger.error(f"❌ Failed to create TRUSTS edge: {str(e)}")
             raise
+    
+    # ── Connection request / approval flow ──
+    async def accept_trusts_edge(self, from_user_id: str, to_user_id: str) -> bool:
+        """Accept a pending TRUSTS edge.
+        'from_user_id' = the person who SENT the request.
+        'to_user_id'   = the RECEIVER who is accepting (i.e. the current user).
+        We query from the receiver's perspective using inE().
+        """
+        g = graph_client.get_traversal()
+        try:
+            # Receiver looks at incoming pending edges from sender
+            edge = (
+                g.V().has('User', 'user_id', to_user_id)
+                .inE('TRUSTS')
+                .has('status', 'pending')
+                .where(__.outV().has('User', 'user_id', from_user_id))
+                .toList()
+            )
+            if not edge:
+                return False
+            
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('TRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .property('status', 'accepted') \
+                .property('accepted_at', int(datetime.utcnow().timestamp())) \
+                .iterate()
+            
+            logger.info(f"✅ Accepted TRUSTS edge: {from_user_id} → {to_user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to accept TRUSTS edge: {str(e)}")
+            return False
+    
+    async def reject_trusts_edge(self, from_user_id: str, to_user_id: str) -> bool:
+        """Reject a pending TRUSTS edge.
+        'from_user_id' = the person who SENT the request.
+        'to_user_id'   = the RECEIVER who is rejecting.
+        """
+        g = graph_client.get_traversal()
+        try:
+            # Receiver looks at incoming pending edges from sender
+            edge = (
+                g.V().has('User', 'user_id', to_user_id)
+                .inE('TRUSTS')
+                .has('status', 'pending')
+                .where(__.outV().has('User', 'user_id', from_user_id))
+                .toList()
+            )
+            if not edge:
+                return False
+            
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('TRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .property('status', 'rejected') \
+                .property('rejected_at', int(datetime.utcnow().timestamp())) \
+                .iterate()
+            
+            logger.info(f"✅ Rejected TRUSTS edge: {from_user_id} → {to_user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to reject TRUSTS edge: {str(e)}")
+            return False
+    
+    async def get_pending_requests(self, user_id: str) -> list:
+        """Get all pending TRUSTS edges where this user is the receiver.
+        Returns normalised dicts (not raw Gremlin valueMap output).
+        """
+        g = graph_client.get_traversal()
+        try:
+            raw_pending = (
+                g.V().has('User', 'user_id', user_id)
+                .inE('TRUSTS')
+                .has('status', 'pending')
+                .valueMap(True)
+                .toList()
+            )
+            return [self._normalize_edge(e) for e in raw_pending]
+        except Exception as e:
+            logger.error(f"❌ Failed to get pending requests: {str(e)}")
+            return []
+
+    # ── HIGH PRIORITY: Edge deletion ──
+    async def delete_trusts_edge(self, from_user_id: str, to_user_id: str) -> bool:
+        """Delete a TRUSTS edge between two users.
+        Also updates is_mutual flag on the reverse edge if it exists."""
+        g = graph_client.get_traversal()
+        try:
+            edge = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .toList()
+            )
+            if not edge:
+                return False
+            
+            # Drop the edge
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('TRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .drop() \
+                .iterate()
+            
+            # Update mutual flag on reverse edge (no longer mutual)
+            g.V().has('User', 'user_id', to_user_id) \
+                .outE('TRUSTS') \
+                .where(__.inV().has('User', 'user_id', from_user_id)) \
+                .property('is_mutual', False) \
+                .iterate()
+            
+            logger.info(
+                f"🗑️ TRUSTS edge removed: {from_user_id} → {to_user_id} "
+                f"at {datetime.utcnow().isoformat()} (audit)"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to delete TRUSTS edge: {str(e)}")
+            return False
+    
+    async def delete_founded_edge(self, user_id: str, startup_id: str) -> bool:
+        """Delete a FOUNDED edge between a user and startup"""
+        g = graph_client.get_traversal()
+        try:
+            edge = (
+                g.V().has('User', 'user_id', user_id)
+                .outE('FOUNDED')
+                .where(__.inV().has('Startup', 'startup_id', startup_id))
+                .toList()
+            )
+            if not edge:
+                return False
+            
+            g.V().has('User', 'user_id', user_id) \
+                .outE('FOUNDED') \
+                .where(__.inV().has('Startup', 'startup_id', startup_id)) \
+                .drop() \
+                .iterate()
+            
+            logger.info(f"✅ Deleted FOUNDED edge: {user_id} → {startup_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to delete FOUNDED edge: {str(e)}")
+            return False
+    
+    async def delete_invested_in_edge(self, investor_id: str, startup_id: str) -> bool:
+        """Delete an INVESTED_IN edge between an investor and startup"""
+        g = graph_client.get_traversal()
+        try:
+            edge = (
+                g.V().has('User', 'user_id', investor_id)
+                .outE('INVESTED_IN')
+                .where(__.inV().has('Startup', 'startup_id', startup_id))
+                .toList()
+            )
+            if not edge:
+                return False
+            
+            g.V().has('User', 'user_id', investor_id) \
+                .outE('INVESTED_IN') \
+                .where(__.inV().has('Startup', 'startup_id', startup_id)) \
+                .drop() \
+                .iterate()
+            
+            logger.info(f"✅ Deleted INVESTED_IN edge: {investor_id} → {startup_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to delete INVESTED_IN edge: {str(e)}")
+            return False
     
     async def update_trust_score(
         self,
@@ -127,14 +399,17 @@ class EdgeService:
         g = graph_client.get_traversal()
         
         try:
-            # Get current count
-            edge_data = (
+            # Safe fetch — .toList() instead of .next() to avoid StopIteration crash
+            edge_list = (
                 g.V().has('User', 'user_id', from_user_id)
                 .outE('TRUSTS')
                 .where(__.inV().has('User', 'user_id', to_user_id))
                 .valueMap(True)
-                .next()
+                .toList()
             )
+            if not edge_list:
+                raise ValueError(f"No TRUSTS edge found from {from_user_id} to {to_user_id}")
+            edge_data = edge_list[0]
             
             current_count = edge_data.get('successful_intros', [0])[0]
             
@@ -158,9 +433,109 @@ class EdgeService:
             logger.error(f"❌ Failed to increment successful intros: {str(e)}")
             return False
     
+    # ── Interaction count → score sync (with recalc cooldown) ──
+    async def increment_interaction_count(
+        self,
+        from_user_id: str,
+        to_user_id: str
+    ) -> bool:
+        """Increment interaction count on edge and auto-recalculate trust score.
+        Call this whenever a meaningful interaction occurs (e.g., message, meeting).
+        Trust score is only recalculated if the last update was > RECALC_COOLDOWN_SECONDS ago."""
+        g = graph_client.get_traversal()
+        
+        try:
+            # Safe fetch — .toList() instead of .next() to avoid StopIteration crash
+            edge_list = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .valueMap(True)
+                .toList()
+            )
+            if not edge_list:
+                raise ValueError(f"No TRUSTS edge found from {from_user_id} to {to_user_id}")
+            edge_data = edge_list[0]
+            
+            current_count = edge_data.get('interaction_count', [0])[0]
+            now = int(datetime.utcnow().timestamp())
+            
+            # Update count, reset decay factor, and set last interaction time
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('TRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .property('interaction_count', current_count + 1) \
+                .property('interaction_decay_factor', 1.0) \
+                .property('last_interaction_at', now) \
+                .iterate()
+            
+            # Recalculate trust score only if cooldown has elapsed
+            last_updated = edge_data.get('updated_at', [0])[0]
+            if isinstance(last_updated, list):
+                last_updated = last_updated[0] if last_updated else 0
+            if (now - int(last_updated)) > RECALC_COOLDOWN_SECONDS:
+                await self.update_trust_score(from_user_id, to_user_id)
+            else:
+                logger.info("⏭️ Skipping trust score recalc — within cooldown window")
+            
+            logger.info(
+                f"✅ Incremented interaction count: {from_user_id} → {to_user_id} (new count: {current_count + 1})"
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to increment interaction count: {str(e)}")
+            return False
+    
+    # ── List trust edges for a user ──
+    async def get_user_trust_edges(
+        self,
+        user_id: str,
+        status: Optional[str] = None,
+        direction: str = 'out'
+    ) -> list:
+        """Get all TRUSTS edges for a user with optional status and direction filter.
+        
+        Args:
+            user_id:   The user whose edges to fetch.
+            status:    Optional filter — 'pending', 'accepted', 'rejected'.
+            direction: 'out' (sent), 'in' (received), or 'both'.
+        """
+        g = graph_client.get_traversal()
+        try:
+            base = g.V().has('User', 'user_id', user_id)
+            
+            if direction == 'in':
+                traversal = base.inE('TRUSTS')
+            elif direction == 'both':
+                traversal = base.bothE('TRUSTS')
+            else:
+                traversal = base.outE('TRUSTS')
+            
+            if status:
+                traversal = traversal.has('status', status)
+            
+            raw = traversal.valueMap(True).toList()
+            return [self._normalize_edge(e) for e in raw]
+        except Exception as e:
+            logger.error(f"❌ Failed to get trust edges for {user_id}: {str(e)}")
+            return []
+
     async def create_founded_edge(self, edge_data: FoundedEdgeCreate) -> FoundedEdgeResponse:
         """Create a FOUNDED edge (User → Startup)"""
         g = graph_client.get_traversal()
+        
+        # ── Duplicate edge prevention ──
+        existing = (
+            g.V().has('User', 'user_id', edge_data.user_id)
+            .outE('FOUNDED')
+            .where(__.inV().has('Startup', 'startup_id', edge_data.startup_id))
+            .toList()
+        )
+        if existing:
+            raise ValueError(
+                f"FOUNDED edge already exists: {edge_data.user_id} → {edge_data.startup_id}"
+            )
         
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
@@ -200,6 +575,18 @@ class EdgeService:
     async def create_invested_in_edge(self, edge_data: InvestedInEdgeCreate) -> InvestedInEdgeResponse:
         """Create an INVESTED_IN edge (Investor → Startup)"""
         g = graph_client.get_traversal()
+        
+        # ── Duplicate edge prevention ──
+        existing = (
+            g.V().has('User', 'user_id', edge_data.investor_id)
+            .outE('INVESTED_IN')
+            .where(__.inV().has('Startup', 'startup_id', edge_data.startup_id))
+            .toList()
+        )
+        if existing:
+            raise ValueError(
+                f"INVESTED_IN edge already exists: {edge_data.investor_id} → {edge_data.startup_id}"
+            )
         
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
@@ -253,22 +640,26 @@ class EdgeService:
         created_at = datetime.utcnow()
         
         try:
-            # Get user and organization vertices
-            user_vertex = g.V().has('User', 'user_id', user_id).next()
-            org_vertex = g.V().has('Organization', 'org_id', org_id).next()
-            
-            # Create edge
-            edge = (
-                g.V(user_vertex)
-                .addE('MEMBER_OF')
-                .to(org_vertex)
-                .property('edge_id', edge_id)
-                .property('role', role)
-                .property('start_date', int(start_date.timestamp()) if start_date else None)
-                .property('active', active)
-                .property('created_at', int(created_at.timestamp()))
-                .next()
+            # ── HIGH PRIORITY: Duplicate edge prevention ──
+            existing = (
+                g.V().has('User', 'user_id', user_id)
+                .outE('MEMBER_OF')
+                .where(__.inV().has('Organization', 'org_id', org_id))
+                .toList()
             )
+            if existing:
+                raise ValueError(f"MEMBER_OF edge already exists: {user_id} → {org_id}")
+            
+            # ── MEDIUM PRIORITY: Fixed — use has() steps instead of .next() ──
+            g.V().has('User', 'user_id', user_id) \
+                .addE('MEMBER_OF') \
+                .to(__.V().has('Organization', 'org_id', org_id)) \
+                .property('edge_id', edge_id) \
+                .property('role', role) \
+                .property('start_date', int(start_date.timestamp()) if start_date else None) \
+                .property('active', active) \
+                .property('created_at', int(created_at.timestamp())) \
+                .iterate()
             
             logger.info(f"✅ Created MEMBER_OF edge: {user_id} → {org_id}")
             
@@ -296,35 +687,46 @@ class EdgeService:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
     ) -> dict:
-        """Create a WORKED_WITH edge (User → User)"""
+        """Create a WORKED_WITH edge (User ↔ User, bidirectional)"""
         g = graph_client.get_traversal()
+        
+        # ── HIGH PRIORITY: Self-loop prevention ──
+        if user_id_1 == user_id_2:
+            raise ValueError("User cannot create a WORKED_WITH edge with themselves")
+        
+        # ── HIGH PRIORITY: Duplicate edge prevention (check both directions) ──
+        existing = (
+            g.V().has('User', 'user_id', user_id_1)
+            .bothE('WORKED_WITH')
+            .where(__.bothV().has('User', 'user_id', user_id_2))
+            .toList()
+        )
+        if existing:
+            raise ValueError(
+                f"WORKED_WITH relationship already exists between {user_id_1} and {user_id_2}"
+            )
         
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
         
         try:
-            # Get both user vertices
-            user1_vertex = g.V().has('User', 'user_id', user_id_1).next()
-            user2_vertex = g.V().has('User', 'user_id', user_id_2).next()
-            
-            # Create bidirectional edges
-            edge = (
-                g.V(user1_vertex)
-                .addE('WORKED_WITH')
-                .to(user2_vertex)
-                .property('edge_id', edge_id)
-                .property('context', context)
-                .property('start_date', int(start_date.timestamp()) if start_date else None)
-                .property('end_date', int(end_date.timestamp()) if end_date else None)
-                .property('created_at', int(created_at.timestamp()))
-                .next()
-            )
-            
-            # Create reverse edge (bidirectional)
-            reverse_edge_id = str(uuid.uuid4())
-            g.V(user2_vertex) \
+            # ── MEDIUM PRIORITY: Fixed — use has() steps instead of .next() ──
+            # Forward edge
+            g.V().has('User', 'user_id', user_id_1) \
                 .addE('WORKED_WITH') \
-                .to(user1_vertex) \
+                .to(__.V().has('User', 'user_id', user_id_2)) \
+                .property('edge_id', edge_id) \
+                .property('context', context) \
+                .property('start_date', int(start_date.timestamp()) if start_date else None) \
+                .property('end_date', int(end_date.timestamp()) if end_date else None) \
+                .property('created_at', int(created_at.timestamp())) \
+                .iterate()
+            
+            # Reverse edge (bidirectional)
+            reverse_edge_id = str(uuid.uuid4())
+            g.V().has('User', 'user_id', user_id_2) \
+                .addE('WORKED_WITH') \
+                .to(__.V().has('User', 'user_id', user_id_1)) \
                 .property('edge_id', reverse_edge_id) \
                 .property('context', context) \
                 .property('start_date', int(start_date.timestamp()) if start_date else None) \

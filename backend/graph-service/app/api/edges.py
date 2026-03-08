@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 import logging
-from typing import Optional
+from typing import Optional, List
 
 from app.schemas.edge_schemas import (
     TrustsEdgeCreate, TrustsEdgeResponse,
@@ -26,12 +26,13 @@ async def create_trusts_edge(edge_data: TrustsEdgeCreate):
     - domain_tags: areas of trust
     
     **Note**: TRUSTS edges are directional. For mutual trust, create two edges.
+    Edge starts with status='pending' — receiver must accept.
     """
     try:
         return await edge_service.create_trusts_edge(edge_data)
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
@@ -40,6 +41,104 @@ async def create_trusts_edge(edge_data: TrustsEdgeCreate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+
+# ── Connection Request / Approval Flow ──
+
+@router.put("/trusts/accept")
+async def accept_trusts_edge(from_user_id: str, to_user_id: str):
+    """Accept a pending TRUSTS edge (the receiver approves the connection)"""
+    success = await edge_service.accept_trusts_edge(from_user_id, to_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending TRUSTS edge found between these users"
+        )
+    return {"message": "TRUSTS edge accepted", "from_user_id": from_user_id, "to_user_id": to_user_id}
+
+@router.put("/trusts/reject")
+async def reject_trusts_edge(from_user_id: str, to_user_id: str):
+    """Reject a pending TRUSTS edge (the receiver declines the connection)"""
+    success = await edge_service.reject_trusts_edge(from_user_id, to_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending TRUSTS edge found between these users"
+        )
+    return {"message": "TRUSTS edge rejected", "from_user_id": from_user_id, "to_user_id": to_user_id}
+
+@router.get("/trusts/pending/{user_id}")
+async def get_pending_requests(user_id: str):
+    """Get all pending TRUSTS edges where this user is the receiver"""
+    pending = await edge_service.get_pending_requests(user_id)
+    return {"user_id": user_id, "pending_requests": pending, "count": len(pending)}
+
+@router.get("/trusts/user/{user_id}")
+async def get_user_trust_edges(
+    user_id: str,
+    edge_status: Optional[str] = None,
+    direction: str = "out"
+):
+    """Get all TRUSTS edges for a user.
+    
+    Query params:
+    - **edge_status**: Filter by 'pending', 'accepted', or 'rejected'
+    - **direction**: 'out' (sent), 'in' (received), or 'both' (default: out)
+    """
+    if direction not in ("out", "in", "both"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="direction must be 'out', 'in', or 'both'"
+        )
+    edges = await edge_service.get_user_trust_edges(user_id, status=edge_status, direction=direction)
+    return {"user_id": user_id, "edges": edges, "count": len(edges)}
+
+# ── Edge Deletion ──
+
+@router.delete("/trusts")
+async def delete_trusts_edge(from_user_id: str, to_user_id: str):
+    """Delete a TRUSTS edge between two users"""
+    success = await edge_service.delete_trusts_edge(from_user_id, to_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="TRUSTS edge not found"
+        )
+    return {"message": "TRUSTS edge deleted", "from_user_id": from_user_id, "to_user_id": to_user_id}
+
+@router.delete("/founded")
+async def delete_founded_edge(user_id: str, startup_id: str):
+    """Delete a FOUNDED edge between a user and startup"""
+    success = await edge_service.delete_founded_edge(user_id, startup_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="FOUNDED edge not found"
+        )
+    return {"message": "FOUNDED edge deleted", "user_id": user_id, "startup_id": startup_id}
+
+@router.delete("/invested")
+async def delete_invested_in_edge(investor_id: str, startup_id: str):
+    """Delete an INVESTED_IN edge between an investor and startup"""
+    success = await edge_service.delete_invested_in_edge(investor_id, startup_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="INVESTED_IN edge not found"
+        )
+    return {"message": "INVESTED_IN edge deleted", "investor_id": investor_id, "startup_id": startup_id}
+
+# ── Interaction Count (with auto score sync) ──
+
+@router.post("/trusts/increment-interaction")
+async def increment_interaction_count(from_user_id: str, to_user_id: str):
+    """Increment interaction count and auto-recalculate trust score"""
+    success = await edge_service.increment_interaction_count(from_user_id, to_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="TRUSTS edge not found"
+        )
+    return {"message": "Interaction count incremented and trust score recalculated"}
 
 @router.put("/trusts/score")
 async def update_trust_score(

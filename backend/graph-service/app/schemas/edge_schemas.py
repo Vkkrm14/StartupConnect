@@ -44,6 +44,11 @@ class TrustsEdgeCreate(EdgeBase):
     def validate_domain_tags(cls, v):
         return [tag.lower().strip() for tag in v]
 
+class TrustsEdgeStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
 class TrustsEdgeResponse(EdgeBase):
     edge_id: str
     from_user_id: str
@@ -51,6 +56,8 @@ class TrustsEdgeResponse(EdgeBase):
     endorsement_count: int
     domain_tags: List[str]
     successful_intros: int
+    is_mutual: bool = False
+    status: str = "pending"
     last_interaction_at: Optional[datetime]
     created_at: datetime
 
