@@ -65,48 +65,6 @@ class UserRepository {
     }
   }
 
-  /// Create trust edge
-  Future<bool> createTrustEdge({
-    required String fromUserId,
-    required String toUserId,
-    required double trustScore,
-    double strengthScore = 0.5,
-  }) async {
-    try {
-      await _apiClient.post(
-        '/api/v1/trusts',
-        data: {
-          'from_user_id': fromUserId,
-          'to_user_id': toUserId,
-          'trust_score': trustScore,
-          'strength_score': strengthScore,
-        },
-      );
-      return true;
-    } on DioException catch (e) {
-      print('Create trust error: ${ApiClient.getErrorMessage(e)}');
-      return false;
-    }
-  }
-
-  /// Update trust score
-  Future<bool> updateTrustScore({
-    required String fromUserId,
-    required String toUserId,
-    required double trustScore,
-  }) async {
-    try {
-      await _apiClient.patch(
-        '/api/v1/trusts/$fromUserId/$toUserId',
-        data: {'trust_score': trustScore},
-      );
-      return true;
-    } on DioException catch (e) {
-      print('Update trust error: ${ApiClient.getErrorMessage(e)}');
-      return false;
-    }
-  }
-
   /// Get user's reputation score
   Future<double> getReputationScore(String userId) async {
     try {
@@ -117,3 +75,4 @@ class UserRepository {
     }
   }
 }
+

@@ -23,6 +23,12 @@ class TrustScoringService:
     """
 
     @staticmethod
+    def _unwrap_value(value, default=None):
+        if isinstance(value, list):
+            return value[0] if value else default
+        return value if value is not None else default
+
+    @staticmethod
     def compute_score(
         interaction_count: int,
         successful_intros: int,
@@ -102,10 +108,10 @@ class TrustScoringService:
                 .next()
             )
 
-            interaction_count        = edge_data.get('interaction_count',       [0])[0]
-            successful_intros        = edge_data.get('successful_intros',       [0])[0]
-            last_interaction_raw     = edge_data.get('last_interaction_at',     [None])[0]
-            decay_factor_raw         = edge_data.get('interaction_decay_factor',[1.0])[0]
+            interaction_count = self._unwrap_value(edge_data.get('interaction_count'), 0)
+            successful_intros = self._unwrap_value(edge_data.get('successful_intros'), 0)
+            last_interaction_raw = self._unwrap_value(edge_data.get('last_interaction_at'), None)
+            decay_factor_raw = self._unwrap_value(edge_data.get('interaction_decay_factor'), 1.0)
             last_interaction_at      = float(last_interaction_raw) if last_interaction_raw else None
             interaction_decay_factor = float(decay_factor_raw) if decay_factor_raw is not None else 1.0
 
@@ -156,7 +162,7 @@ class TrustScoringService:
             return {"status": "error", "message": str(e)}
 
         # ── Rate-limit: 1 credit per hour ─────────────────────────────────────
-        last_raw = edge_data.get('last_interaction_at', [None])[0]
+        last_raw = self._unwrap_value(edge_data.get('last_interaction_at'), None)
         if last_raw:
             hours_since = (datetime.utcnow().timestamp() - float(last_raw)) / 3600
             if hours_since < 1.0:
@@ -166,8 +172,8 @@ class TrustScoringService:
                 }
 
         now = datetime.utcnow().timestamp()
-        new_count     = edge_data.get('interaction_count', [0])[0] + 1
-        intros        = edge_data.get('successful_intros', [0])[0]
+        new_count = int(self._unwrap_value(edge_data.get('interaction_count'), 0)) + 1
+        intros = int(self._unwrap_value(edge_data.get('successful_intros'), 0))
 
         # recency_score = 1.0 on interaction (just interacted — full freshness)
         new_recency = self.compute_recency_score(now)  # days_since=0 → 1.0
@@ -333,14 +339,20 @@ class TrustScoringService:
             else:
                 # Average trust score
                 avg_trust = sum(
-                    e.get('trust_score', [0.0])[0] for e in outgoing_edges
+                    float(self._unwrap_value(e.get('trust_score'), 0.0)) for e in outgoing_edges
                 ) / len(outgoing_edges)
                 
                 # Successful intro rate:
                 # success_rate = total_successful_intros / total_interactions
                 # Measures: "what fraction of my interactions led to a completed intro?"
-                total_interactions = sum(e.get('interaction_count', [0])[0] for e in outgoing_edges)
-                total_successful   = sum(e.get('successful_intros',  [0])[0] for e in outgoing_edges)
+                total_interactions = sum(
+                    int(self._unwrap_value(e.get('interaction_count'), 0))
+                    for e in outgoing_edges
+                )
+                total_successful = sum(
+                    int(self._unwrap_value(e.get('successful_intros'), 0))
+                    for e in outgoing_edges
+                )
                 
                 success_denominator = max(total_interactions, total_successful, 1)
                 success_rate = min(total_successful / success_denominator, 1.0)

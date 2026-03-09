@@ -331,12 +331,32 @@ class _IntroRequestScreenState extends State<IntroRequestScreen> {
         ),
       );
       
-      // Add arrow between nodes
+      // Add arrow between nodes (green + mutual indicator if edge is mutual)
       if (i < path.nodes.length - 1) {
+        final edgeIsMutual = i < path.edges.length && path.edges[i].mutual;
         widgets.add(
-          const Padding(
-            padding: EdgeInsets.only(bottom: 20),
-            child: Icon(Icons.arrow_forward, size: 16, color: Colors.grey),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.arrow_forward,
+                  size: 16,
+                  color: edgeIsMutual ? Colors.green : Colors.grey,
+                ),
+                if (edgeIsMutual)
+                  Container(
+                    margin: const EdgeInsets.only(top: 2),
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(
+                      color: Colors.green,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+              ],
+            ),
           ),
         );
       }

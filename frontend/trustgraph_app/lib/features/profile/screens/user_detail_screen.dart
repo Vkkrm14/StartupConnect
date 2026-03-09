@@ -34,6 +34,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   bool _isPendingReceived = false;  // target user sent a pending request to us
   bool _isConnectionLoading = false;
 
+  // Directional trust scores (only populated when mutually connected)
+  double? _myTrustScore;       // current user → target
+  double? _theirTrustScore;    // target → current user
+
   @override
   void initState() {
     super.initState();
@@ -70,8 +74,32 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
   }
 
+  Future<void> _loadTrustScores() async {
+    if (_currentUserId == null) return;
+    try {
+      final fwd = await _connectionRepository.getTrustScore(
+        fromUserId: _currentUserId!,
+        toUserId: widget.userId,
+      );
+      final rev = await _connectionRepository.getTrustScore(
+        fromUserId: widget.userId,
+        toUserId: _currentUserId!,
+      );
+      if (mounted) {
+        setState(() {
+          _myTrustScore =
+              (fwd?['trust_score'] as num?)?.toDouble();
+          _theirTrustScore =
+              (rev?['trust_score'] as num?)?.toDouble();
+        });
+      }
+    } catch (_) {}
+  }
+
   Future<void> _checkConnectionStatus() async {
     if (_currentUserId == null) return;
+
+    // 1. Check mutual connection via the dedicated bidirectional endpoint.
     try {
       final connection = await _connectionRepository.getConnectionStatus(
         fromUserId: _currentUserId!,
@@ -79,16 +107,28 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       );
       if (connection != null && connection['is_connected'] == true) {
         setState(() => _isConnected = true);
+        await _loadTrustScores();
         return;
       }
     } catch (_) {}
 
+    // 2. Check whether the target user has sent us a pending request
+    //    (so we can show "Accept" instead of "Connect").
     try {
-      // Check if we have a pending request to them (by checking connections list)
-      final connections = await _userRepository.getConnections(_currentUserId!);
-      final isInConnections = connections.any((c) => c.userId == widget.userId);
-      if (isInConnections) {
-        setState(() => _isConnected = true);
+      final pending = await _connectionRepository.getPendingRequests(_currentUserId!);
+      final hasIncoming = pending.any((e) => e.fromUserId == widget.userId);
+      if (hasIncoming) {
+        setState(() => _isPendingReceived = true);
+        return;
+      }
+    } catch (_) {}
+
+    // 3. Check whether we have already sent them a pending request.
+    try {
+      final ourPending = await _connectionRepository.getOutgoingPendingRequests(_currentUserId!);
+      final hasSent = ourPending.any((e) => e.toUserId == widget.userId);
+      if (hasSent) {
+        setState(() => _isPendingSent = true);
       }
     } catch (_) {}
   }
@@ -121,6 +161,41 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             content: Text('Error: ${ApiClient.getErrorMessage(e)}'),
             backgroundColor: Colors.red,
           ),
+        );
+      }
+    }
+  }
+
+  Future<void> _acceptIncomingRequest() async {
+    if (_currentUserId == null) return;
+    setState(() => _isConnectionLoading = true);
+    try {
+      // The edge was sent by widget.userId → _currentUserId
+      final success = await _connectionRepository.acceptConnection(
+        fromUserId: widget.userId,
+        toUserId: _currentUserId!,
+      );
+      setState(() {
+          _isConnectionLoading = false;
+          if (success) {
+            _isPendingReceived = false;
+            _isConnected = true;
+          }
+        });
+        if (success) await _loadTrustScores();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? 'Connection accepted!' : 'Failed to accept'),
+            backgroundColor: success ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _isConnectionLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: ${ApiClient.getErrorMessage(e)}')),
         );
       }
     }
@@ -303,6 +378,14 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                         const SizedBox(height: 16),
                       ],
 
+                      // Trust scores section — only shown when mutually connected
+                      if (_isConnected &&
+                          (_myTrustScore != null ||
+                              _theirTrustScore != null)) ...[
+                        _buildTrustScoresSection(),
+                        const SizedBox(height: 16),
+                      ],
+
                       Row(
                         children: [
                           // Message button
@@ -365,6 +448,88 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     );
   }
 
+  Color _getTrustColor(double score) {
+    if (score >= 0.7) return Colors.green;
+    if (score >= 0.4) return Colors.amber;
+    return Colors.red;
+  }
+
+  Widget _buildTrustScoresSection() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shield_outlined, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                'Directional Trust',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_myTrustScore != null)
+            _buildTrustRow(
+              label: 'You trust them',
+              score: _myTrustScore!,
+            ),
+          if (_myTrustScore != null && _theirTrustScore != null)
+            const SizedBox(height: 8),
+          if (_theirTrustScore != null)
+            _buildTrustRow(
+              label: 'They trust you',
+              score: _theirTrustScore!,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrustRow({required String label, required double score}) {
+    final color = _getTrustColor(score);
+    return Row(
+      children: [
+        SizedBox(
+          width: 120,
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+          ),
+        ),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: score.clamp(0.0, 1.0),
+              minHeight: 6,
+              backgroundColor: Colors.grey[200],
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          score.toStringAsFixed(2),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildConnectionButton() {
     if (_isConnectionLoading) {
       return const Center(child: CircularProgressIndicator());
@@ -381,6 +546,23 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             minimumSize: const Size(0, 48),
             foregroundColor: Colors.red,
             side: const BorderSide(color: Colors.red),
+          ),
+        ),
+      );
+    }
+
+    // They sent us a request — show Accept button
+    if (_isPendingReceived) {
+      return SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: _acceptIncomingRequest,
+          icon: const Icon(Icons.check_circle_outline, size: 18),
+          label: const Text('Accept Request'),
+          style: ElevatedButton.styleFrom(
+            minimumSize: const Size(0, 48),
+            backgroundColor: Colors.green,
+            foregroundColor: Colors.white,
           ),
         ),
       );

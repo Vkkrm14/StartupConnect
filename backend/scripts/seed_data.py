@@ -7,16 +7,17 @@ import random
 import time
 import sys
 import hashlib
+import os
 from typing import Dict, List
 from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
 from gremlin_python.process.anonymous_traversal import traversal
 from gremlin_python.process.graph_traversal import __
-from gremlin_python.driver.serializer import GraphBinarySerializersV1
+from gremlin_python.driver.serializer import GraphSONSerializersV3d0
 
 # Configuration
-GRAPH_SERVICE_URL = "http://100.70.53.90:8001"
-SEARCH_SERVICE_URL = "http://100.70.53.90:8003"
-JANUSGRAPH_URL    = "ws://100.70.53.90:8182/gremlin"
+GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
+SEARCH_SERVICE_URL = os.getenv("SEARCH_SERVICE_URL", "http://localhost:8003")
+JANUSGRAPH_URL = os.getenv("JANUSGRAPH_URL", "ws://localhost:8182/gremlin")
 API_TIMEOUT = 10
 DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
 
@@ -61,17 +62,26 @@ def compute_score(
     success_bonus     = min(successful_intros  / 10.0, 1.0) * 0.40
     recency_bonus = 0.0
     if last_interaction_at:
-        days_since = (datetime.utcnow().timestamp() - last_interaction_at) / 86400
+        days_since = (datetime.now(timezone.utc).timestamp() - last_interaction_at) / 86400
         if days_since <= 90:
             recency_bonus = (1 - days_since / 90) * 0.20
     return round(min(interaction_bonus + success_bonus + recency_bonus, 1.0), 4)
+
+
+def compute_recency_score(last_interaction_at: float | None) -> float:
+    """Mirror trust_scoring.py recency behaviour for seeded edges."""
+    if not last_interaction_at:
+        return 0.0
+
+    days_since = (datetime.now(timezone.utc).timestamp() - last_interaction_at) / 86400
+    return round(max(0.0, 1.0 - (days_since / 90.0)), 4)
 
 
 def get_gremlin_traversal():
     """Open a direct gremlin connection to JanusGraph."""
     conn = DriverRemoteConnection(
         JANUSGRAPH_URL, 'g',
-        message_serializer=GraphBinarySerializersV1()
+        message_serializer=GraphSONSerializersV3d0()
     )
     return traversal().withRemote(conn), conn
 
@@ -92,7 +102,7 @@ def check_database_empty() -> bool:
         connection = DriverRemoteConnection(
             JANUSGRAPH_URL,
             'g',
-            message_serializer=GraphBinarySerializersV1()
+            message_serializer=GraphSONSerializersV3d0()
         )
         g = traversal().withRemote(connection)
         
@@ -112,7 +122,7 @@ def clear_database() -> bool:
         connection = DriverRemoteConnection(
             JANUSGRAPH_URL,
             'g',
-            message_serializer=GraphBinarySerializersV1()
+            message_serializer=GraphSONSerializersV3d0()
         )
         g = traversal().withRemote(connection)
         
@@ -232,7 +242,7 @@ def create_startup(startup_data: dict) -> Dict:
         raise
 
 
-def create_trusts_edge(
+def _create_directed_trust_edge(
     from_user_id: str,
     to_user_id: str,
     trust_score_hint: float,
@@ -255,7 +265,8 @@ def create_trusts_edge(
         successful_intros = random.randint(1, 3)
 
     # Simulate a recent interaction (within last 30 days)
-    last_interaction_at = datetime.utcnow().timestamp() - random.randint(1, 30) * 86400
+    last_interaction_at = datetime.now(timezone.utc).timestamp() - random.randint(1, 30) * 86400
+    recency_score = compute_recency_score(last_interaction_at)
 
     # Compute the score using the same formula as trust_scoring.py
     computed_score = compute_score(
@@ -264,8 +275,8 @@ def create_trusts_edge(
         last_interaction_at=last_interaction_at
     )
 
-    edge_id    = str(uuid.uuid4())
-    created_at = int(datetime.utcnow().timestamp())
+    edge_id = str(uuid.uuid4())
+    created_at = int(datetime.now(timezone.utc).timestamp())
 
     try:
         g, conn = get_gremlin_traversal()
@@ -273,16 +284,20 @@ def create_trusts_edge(
             g.V().has('User', 'user_id', from_user_id) \
                 .addE('TRUSTS') \
                 .to(__.V().has('User', 'user_id', to_user_id)) \
-                .property('edge_id',           edge_id) \
-                .property('trust_score',        computed_score) \
-                .property('strength_score',     round(random.uniform(0.5, 0.9), 2)) \
-                .property('recency_score',      round(random.uniform(0.6, 1.0), 2)) \
-                .property('interaction_count',  interaction_count) \
-                .property('successful_intros',  successful_intros) \
+                .property('edge_id', edge_id) \
+                .property('trust_score', computed_score) \
+                .property('strength_score', round(random.uniform(0.5, 0.9), 2)) \
+                .property('recency_score', recency_score) \
+                .property('interaction_count', interaction_count) \
+                .property('successful_intros', successful_intros) \
                 .property('interaction_decay_factor', 1.0) \
-                .property('endorsement_count',  random.randint(0, 5)) \
+                .property('endorsement_count', random.randint(0, 5)) \
                 .property('last_interaction_at', last_interaction_at) \
-                .property('created_at',         created_at) \
+                .property('is_mutual', True) \
+                .property('status', 'accepted') \
+                .property('created_at', created_at) \
+                .property('accepted_at', created_at) \
+                .property('updated_at', created_at) \
                 .iterate()
             if domain_tags:
                 for tag in domain_tags:
@@ -295,12 +310,55 @@ def create_trusts_edge(
             "from_user_id": from_user_id,
             "to_user_id": to_user_id,
             "trust_score": computed_score,
+            "recency_score": recency_score,
             "interaction_count": interaction_count,
             "successful_intros": successful_intros,
         }
     except Exception as e:
         print(f"❌ Failed to create TRUSTS edge directly: {e}")
         raise
+
+
+def create_mutual_trust_connection(
+    user_a_id: str,
+    user_b_id: str,
+    trust_score_hint: float,
+    domain_tags: List[str] = None,
+) -> tuple[dict, dict]:
+    """Create both accepted TRUSTS edges so the seeded pair is a real connection."""
+    forward = _create_directed_trust_edge(
+        user_a_id,
+        user_b_id,
+        trust_score_hint,
+        domain_tags,
+    )
+    reverse = _create_directed_trust_edge(
+        user_b_id,
+        user_a_id,
+        trust_score_hint,
+        domain_tags,
+    )
+    return forward, reverse
+
+
+def refresh_user_reputation(user_id: str) -> float:
+    """Force-refresh reputation so seeded connections appear immediately in the UI."""
+    response = requests.get(
+        f"{GRAPH_SERVICE_URL}/api/v1/edges/trusts/reputation/{user_id}",
+        timeout=API_TIMEOUT,
+    )
+    response.raise_for_status()
+    return float(response.json().get("reputation_score", 0.0))
+
+
+def fetch_user(user_id: str) -> Dict:
+    """Fetch the latest user payload from graph-service."""
+    response = requests.get(
+        f"{GRAPH_SERVICE_URL}/api/v1/vertices/users/{user_id}",
+        timeout=API_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def create_founded_edge(user_id: str, startup_id: str) -> Dict:
@@ -429,8 +487,8 @@ def seed_data():
         startup_ids[startup["name"]] = startup_obj["startup_id"]
         print(f"  ✅ {startup['name']} (ID: {startup_obj['startup_id'][:8]}...)")
     
-    # Create TRUSTS edges (trust network)
-    print("\n🤝 Creating trust edges...")
+    # Create mutual accepted TRUSTS edges (connection network)
+    print("\n🤝 Creating mutual trust connections...")
     trust_relationships = [
         # Founder → Connector
         ("Alice Johnson", "Ivy Martinez", 0.85, ["fintech"]),
@@ -452,13 +510,37 @@ def seed_data():
     ]
     
     for from_name, to_name, trust_score_hint, domain_tags in trust_relationships:
-        edge = create_trusts_edge(
+        forward, reverse = create_mutual_trust_connection(
             user_ids[from_name],
             user_ids[to_name],
             trust_score_hint,
             domain_tags
         )
-        print(f"  ✅ {from_name} → {to_name}  computed={edge['trust_score']:.4f}  (interactions={edge['interaction_count']}, intros={edge['successful_intros']})")
+        print(
+            f"  ✅ {from_name} ↔ {to_name}  "
+            f"forward={forward['trust_score']:.4f}  reverse={reverse['trust_score']:.4f}"
+        )
+
+    print("\n📈 Refreshing reputation scores...")
+    refreshed_users = []
+    for user_name, user_id in user_ids.items():
+        reputation = refresh_user_reputation(user_id)
+        refreshed_users.append((user_name, user_id, reputation))
+        print(f"  ✅ {user_name}: reputation={reputation:.3f}")
+
+    print("\n🔄 Re-indexing users with refreshed reputation...")
+    reindexed = 0
+    role_lookup = {
+        **{u["name"]: ("founder", u) for u in FOUNDERS},
+        **{u["name"]: ("investor", u) for u in INVESTORS},
+        **{u["name"]: ("connector", u) for u in CONNECTORS},
+    }
+    for user_name, user_id, _ in refreshed_users:
+        role, info = role_lookup[user_name]
+        latest_user = fetch_user(user_id)
+        if index_user_in_search(latest_user, role, info):
+            reindexed += 1
+    print(f"  ✅ Re-indexed {reindexed}/{len(refreshed_users)} users")
     
     # Create FOUNDED edges
     print("\n🎯 Creating FOUNDED edges...")
@@ -500,7 +582,7 @@ def seed_data():
     print(f"    - Investors: {len(INVESTORS)}")
     print(f"    - Connectors: {len(CONNECTORS)}")
     print(f"  Startups created: {len(startup_ids)}")
-    print(f"  Trust edges created: {len(trust_relationships)}")
+    print(f"  Trust edges created: {len(trust_relationships) * 2}")
     print(f"  Founded edges created: {len(founded_relationships)}")
     print(f"  Investment edges created: {len(investment_relationships)}")
     
@@ -528,7 +610,7 @@ if __name__ == "__main__":
         connection = DriverRemoteConnection(
             JANUSGRAPH_URL,
             'g',
-            message_serializer=GraphBinarySerializersV1()
+            message_serializer=GraphSONSerializersV3d0()
         )
         g = traversal().withRemote(connection)
         vertex_count = g.V().count().next()
@@ -554,5 +636,3 @@ if __name__ == "__main__":
         print(f"\n\n❌ Seeding failed: {e}")
         import traceback
         traceback.print_exc()
-
-

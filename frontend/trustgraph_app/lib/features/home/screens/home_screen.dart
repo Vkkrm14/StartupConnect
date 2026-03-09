@@ -370,7 +370,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return Colors.green;
       case 'pending':
         return Colors.orange;
-      case 'rejected':
+      case 'declined':
         return Colors.red;
       case 'completed':
         return Colors.blue;
@@ -385,7 +385,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return Icons.check_circle;
       case 'pending':
         return Icons.handshake_outlined;
-      case 'rejected':
+      case 'declined':
         return Icons.cancel;
       case 'completed':
         return Icons.verified;

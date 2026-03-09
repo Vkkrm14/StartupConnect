@@ -686,6 +686,37 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
                                   ),
                                 ),
                               ),
+                              // Mutual badge — all connections returned by
+                              // get_connections are bidirectionally accepted.
+                              const SizedBox(width: 6),
+                              Tooltip(
+                                message: 'Mutual connection',
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green.withOpacity(0.12),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.link,
+                                          size: 11,
+                                          color: Colors.green[700]),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        'MUTUAL',
+                                        style: TextStyle(
+                                          color: Colors.green[700],
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                               if (c.geography != null) ...[
                                 const SizedBox(width: 8),
                                 Icon(Icons.location_on,

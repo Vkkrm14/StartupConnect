@@ -101,6 +101,25 @@ class ConnectionRepository {
     }
   }
 
+  /// Get all pending outgoing connection requests sent by a user.
+  /// Uses the user trust-edges endpoint filtered to pending + outgoing direction.
+  Future<List<TrustEdgeModel>> getOutgoingPendingRequests(String userId) async {
+    try {
+      final response = await _apiClient.get(
+        '/api/v1/edges/trusts/user/$userId',
+        queryParameters: {
+          'edge_status': 'pending',
+          'direction': 'out',
+        },
+      );
+      final List<dynamic> data = response.data['edges'] ?? [];
+      return data.map((json) => TrustEdgeModel.fromJson(json)).toList();
+    } on DioException catch (e) {
+      print('Get outgoing pending requests error: ${ApiClient.getErrorMessage(e)}');
+      return [];
+    }
+  }
+
   // ────────────────────────────────────────────
   // Delete connection
   // ────────────────────────────────────────────

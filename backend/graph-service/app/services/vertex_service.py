@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from gremlin_python.process.graph_traversal import __
 
 from app.core.graph_client import graph_client
 from app.schemas.vertex_schemas import (
