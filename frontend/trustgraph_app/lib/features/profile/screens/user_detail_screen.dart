@@ -137,6 +137,26 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     if (_currentUserId == null) return;
     setState(() => _isConnectionLoading = true);
     try {
+      final liveStatus = await _connectionRepository.getConnectionStatus(
+        fromUserId: _currentUserId!,
+        toUserId: widget.userId,
+      );
+      if (liveStatus != null && liveStatus['is_connected'] == true) {
+        setState(() {
+          _isConnected = true;
+          _isConnectionLoading = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('You are already connected with this user.'),
+            ),
+          );
+        }
+        await _loadTrustScores();
+        return;
+      }
+
       await _connectionRepository.sendConnectionRequest(
         fromUserId: _currentUserId!,
         toUserId: widget.userId,
@@ -389,14 +409,15 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                       Row(
                         children: [
                           // Message button
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () async {
-                                try {
-                                  final provider = context.read<MessagingProvider>();
-                                  if (!provider.isInitialized) {
-                                    await provider.initialize();
-                                  }
+                           Expanded(
+                             child: OutlinedButton.icon(
+                               onPressed: _isConnected
+                                   ? () async {
+                                 try {
+                                   final provider = context.read<MessagingProvider>();
+                                   if (!provider.isInitialized) {
+                                     await provider.initialize();
+                                   }
                                   final conversation = await provider
                                       .getOrCreateConversation(widget.userId);
                                   conversation.participantName = _user!.name;
@@ -406,21 +427,22 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                                       extra: conversation,
                                     );
                                   }
-                                } catch (e) {
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(content: Text('Error: $e')),
-                                    );
+                                  } catch (e) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('Error: $e')),
+                                      );
+                                    }
                                   }
                                 }
-                              },
-                              icon: const Icon(Icons.chat_bubble_outline),
-                              label: const Text('Message'),
-                              style: OutlinedButton.styleFrom(
-                                minimumSize: const Size(0, 48),
-                                side: BorderSide(
-                                  color: Theme.of(context).colorScheme.primary,
-                                ),
+                                   : null,
+                               icon: const Icon(Icons.chat_bubble_outline),
+                               label: Text(_isConnected ? 'Message' : 'Connect to Message'),
+                               style: OutlinedButton.styleFrom(
+                                 minimumSize: const Size(0, 48),
+                                 side: BorderSide(
+                                   color: Theme.of(context).colorScheme.primary,
+                                 ),
                               ),
                             ),
                           ),

@@ -68,10 +68,12 @@ class UserRepository {
   /// Get user's reputation score
   Future<double> getReputationScore(String userId) async {
     try {
-      final user = await getUserById(userId);
-      return user?.reputationScore ?? 0.5;
+      final response = await _apiClient.get(
+        '/api/v1/edges/trusts/reputation/$userId',
+      );
+      return (response.data['reputation_score'] ?? 0.0).toDouble();
     } catch (e) {
-      return 0.5;
+      return 0.0;
     }
   }
 }

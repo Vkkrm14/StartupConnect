@@ -108,16 +108,18 @@ class PathDiscoveryService:
                             .repeat(__.outE('TRUSTS').has('status', 'accepted').inV().simplePath())
                             .times(hop_count)
                             .has('User', 'user_id', investor_id)
-                            .path().by('user_id')
+                            .path()
+                            .by(__.coalesce(__.values('user_id'), __.constant(None)))
                             .toList()
                         )
                         
                         if paths_at_hop:
                             logger.info(f"Found {len(paths_at_hop)} path(s) at {hop_count}-hop level")
                             for path in paths_at_hop:
-                                # Convert Path object to list of user_ids
-                                user_ids = [str(uid) for uid in path]
-                                if len(user_ids) == len(set(user_ids)):
+                                # With the coalesce() path modulator above, vertices become
+                                # their user_id and edges become None. Keep only user ids.
+                                user_ids = [str(step) for step in path if step is not None]
+                                if user_ids and len(user_ids) == len(set(user_ids)):
                                     all_paths.append(user_ids)
                     
                     except Exception as e:
