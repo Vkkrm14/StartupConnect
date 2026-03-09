@@ -18,8 +18,6 @@ class ConnectionRepository {
     required String fromUserId,
     required String toUserId,
     double strengthScore = 0.5,
-    double recencyScore = 1.0,
-    int interactionCount = 0,
     int endorsementCount = 0,
     List<String> domainTags = const [],
   }) async {
@@ -30,8 +28,6 @@ class ConnectionRepository {
           'from_user_id': fromUserId,
           'to_user_id': toUserId,
           'strength_score': strengthScore,
-          'recency_score': recencyScore,
-          'interaction_count': interactionCount,
           'endorsement_count': endorsementCount,
           'domain_tags': domainTags,
         },
@@ -145,6 +141,22 @@ class ConnectionRepository {
       return response.data;
     } on DioException catch (e) {
       print('Get trust score error: ${ApiClient.getErrorMessage(e)}');
+      return null;
+    }
+  }
+
+  /// Check whether two users are mutually connected.
+  Future<Map<String, dynamic>?> getConnectionStatus({
+    required String fromUserId,
+    required String toUserId,
+  }) async {
+    try {
+      final response = await _apiClient.get(
+        '/api/v1/edges/trusts/connected/$fromUserId/$toUserId',
+      );
+      return response.data;
+    } on DioException catch (e) {
+      print('Get connection status error: ${ApiClient.getErrorMessage(e)}');
       return null;
     }
   }

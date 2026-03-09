@@ -49,6 +49,104 @@ class EdgeService:
                 result[key] = v
         return result
 
+    @staticmethod
+    def _extract_edge_value(raw: dict, key: str, default=None):
+        value = raw.get(key, default)
+        if isinstance(value, list):
+            return value[0] if value else default
+        return value
+
+    def _get_trust_edges(self, g, from_user_id: str, to_user_id: str) -> list:
+        return (
+            g.V().has('User', 'user_id', from_user_id)
+            .outE('TRUSTS')
+            .where(__.inV().has('User', 'user_id', to_user_id))
+            .valueMap(True)
+            .toList()
+        )
+
+    def _set_mutual_flag(self, g, from_user_id: str, to_user_id: str, is_mutual: bool) -> None:
+        (
+            g.V().has('User', 'user_id', from_user_id)
+            .outE('TRUSTS')
+            .where(__.inV().has('User', 'user_id', to_user_id))
+            .property('is_mutual', is_mutual)
+            .iterate()
+        )
+
+    def _sync_mutual_flags(self, g, user_a_id: str, user_b_id: str) -> bool:
+        forward_accepted = bool(
+            g.V().has('User', 'user_id', user_a_id)
+            .outE('TRUSTS').has('status', 'accepted')
+            .where(__.inV().has('User', 'user_id', user_b_id))
+            .toList()
+        )
+        reverse_accepted = bool(
+            g.V().has('User', 'user_id', user_b_id)
+            .outE('TRUSTS').has('status', 'accepted')
+            .where(__.inV().has('User', 'user_id', user_a_id))
+            .toList()
+        )
+        is_mutual = forward_accepted and reverse_accepted
+        self._set_mutual_flag(g, user_a_id, user_b_id, is_mutual)
+        self._set_mutual_flag(g, user_b_id, user_a_id, is_mutual)
+        return is_mutual
+
+    def _ensure_trust_edge(
+        self,
+        g,
+        from_user_id: str,
+        to_user_id: str,
+        *,
+        status: str,
+        strength_score: float = 0.5,
+        domain_tags: Optional[List[str]] = None,
+    ) -> None:
+        existing_edges = self._get_trust_edges(g, from_user_id, to_user_id)
+        now_ts = int(datetime.utcnow().timestamp())
+
+        if existing_edges:
+            traversal = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .property('status', status)
+                .property('updated_at', now_ts)
+            )
+            if status == 'accepted':
+                traversal = traversal.property('accepted_at', now_ts)
+            traversal.iterate()
+            return
+
+        edge_id = str(uuid.uuid4())
+        trust_score = trust_scoring_service.compute_score(
+            interaction_count=0,
+            successful_intros=0,
+            last_interaction_at=None,
+        )
+
+        (
+            g.V().has('User', 'user_id', from_user_id)
+            .addE('TRUSTS')
+            .to(__.V().has('User', 'user_id', to_user_id))
+            .property('edge_id', edge_id)
+            .property('trust_score', trust_score)
+            .property('strength_score', strength_score)
+            .property('recency_score', 1.0)
+            .property('interaction_count', 0)
+            .property('endorsement_count', 0)
+            .property('successful_intros', 0)
+            .property('interaction_decay_factor', 1.0)
+            .property('is_mutual', False)
+            .property('status', status)
+            .property('created_at', now_ts)
+            .property('accepted_at', now_ts if status == 'accepted' else None)
+            .iterate()
+        )
+
+        for tag in domain_tags or []:
+            g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
+
     # ── Helper: validate role-based connection rules ──
     def _validate_trust_roles(self, from_user_id: str, to_user_id: str) -> None:
         """Raise ValueError if the sender's role is not allowed to connect to the receiver's role."""
@@ -107,23 +205,17 @@ class EdgeService:
         created_at = datetime.utcnow()
         
         try:
-            # Calculate score from the provided counters — never trust raw input
+            initial_interaction_count = 0
+            initial_successful_intros = 0
+            initial_recency_score = 1.0
+
+            # Calculate score from server-owned counters — never trust raw input
             calculated_score = trust_scoring_service.compute_score(
-                interaction_count=edge_data.interaction_count,
-                successful_intros=edge_data.successful_intros if hasattr(edge_data, 'successful_intros') else 0,
+                interaction_count=initial_interaction_count,
+                successful_intros=initial_successful_intros,
                 last_interaction_at=None   # brand-new edge; no recency yet
             )
 
-            # ── Mutual trust detection ──
-            reverse_exists = (
-                g.V().has('User', 'user_id', edge_data.to_user_id)
-                .outE('TRUSTS')
-                .where(__.inV().has('User', 'user_id', edge_data.from_user_id))
-                .toList()
-            )
-            is_mutual = len(reverse_exists) > 0
-
-            # ── Atomic edge creation with mutual flag sync via sideEffect ──
             traversal = (
                 g.V().has('User', 'user_id', edge_data.from_user_id)
                 .addE('TRUSTS')
@@ -131,23 +223,15 @@ class EdgeService:
                 .property('edge_id', edge_id)
                 .property('trust_score', calculated_score)
                 .property('strength_score', edge_data.strength_score)
-                .property('recency_score', edge_data.recency_score)
-                .property('interaction_count', edge_data.interaction_count)
+                .property('recency_score', initial_recency_score)
+                .property('interaction_count', initial_interaction_count)
                 .property('endorsement_count', edge_data.endorsement_count)
-                .property('successful_intros', 0)
+                .property('successful_intros', initial_successful_intros)
                 .property('interaction_decay_factor', 1.0)
-                .property('is_mutual', is_mutual)
+                .property('is_mutual', False)
                 .property('status', 'pending')
                 .property('created_at', int(created_at.timestamp()))
             )
-            # If reverse edge exists, atomically mark it as mutual in the same traversal
-            if is_mutual:
-                traversal = traversal.sideEffect(
-                    __.V().has('User', 'user_id', edge_data.to_user_id)
-                    .outE('TRUSTS')
-                    .where(__.inV().has('User', 'user_id', edge_data.from_user_id))
-                    .property('is_mutual', True)
-                )
             traversal.iterate()
             
             # Add domain tags to the edge
@@ -156,7 +240,7 @@ class EdgeService:
                     g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
             
             logger.info(
-                f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id} (mutual={is_mutual})"
+                f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id} (pending connection request)"
             )
             
             return TrustsEdgeResponse(
@@ -165,12 +249,12 @@ class EdgeService:
                 to_user_id=edge_data.to_user_id,
                 trust_score=calculated_score,
                 strength_score=edge_data.strength_score,
-                recency_score=edge_data.recency_score,
-                interaction_count=edge_data.interaction_count,
+                recency_score=initial_recency_score,
+                interaction_count=initial_interaction_count,
                 endorsement_count=edge_data.endorsement_count,
                 domain_tags=edge_data.domain_tags,
-                successful_intros=0,
-                is_mutual=is_mutual,
+                successful_intros=initial_successful_intros,
+                is_mutual=False,
                 status='pending',
                 last_interaction_at=None,
                 created_at=created_at
@@ -197,10 +281,14 @@ class EdgeService:
                 .inE('TRUSTS')
                 .has('status', 'pending')
                 .where(__.outV().has('User', 'user_id', from_user_id))
+                .valueMap(True)
                 .toList()
             )
             if not edge:
                 return False
+            pending_edge = edge[0]
+            reverse_strength = float(self._extract_edge_value(pending_edge, 'strength_score', 0.5) or 0.5)
+            reverse_domain_tags = pending_edge.get('domain_tags', []) or []
             
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
@@ -208,6 +296,19 @@ class EdgeService:
                 .property('status', 'accepted') \
                 .property('accepted_at', int(datetime.utcnow().timestamp())) \
                 .iterate()
+
+            self._ensure_trust_edge(
+                g,
+                to_user_id,
+                from_user_id,
+                status='accepted',
+                strength_score=reverse_strength,
+                domain_tags=reverse_domain_tags,
+            )
+            self._sync_mutual_flags(g, from_user_id, to_user_id)
+
+            await trust_scoring_service.update_reputation_score(from_user_id)
+            await trust_scoring_service.update_reputation_score(to_user_id)
             
             logger.info(f"✅ Accepted TRUSTS edge: {from_user_id} → {to_user_id}")
             return True
@@ -237,8 +338,14 @@ class EdgeService:
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('status', 'rejected') \
+                .property('is_mutual', False) \
                 .property('rejected_at', int(datetime.utcnow().timestamp())) \
                 .iterate()
+
+            self._sync_mutual_flags(g, from_user_id, to_user_id)
+
+            await trust_scoring_service.update_reputation_score(from_user_id)
+            await trust_scoring_service.update_reputation_score(to_user_id)
             
             logger.info(f"✅ Rejected TRUSTS edge: {from_user_id} → {to_user_id}")
             return True
@@ -266,35 +373,32 @@ class EdgeService:
 
     # ── HIGH PRIORITY: Edge deletion ──
     async def delete_trusts_edge(self, from_user_id: str, to_user_id: str) -> bool:
-        """Delete a TRUSTS edge between two users.
-        Also updates is_mutual flag on the reverse edge if it exists."""
+        """Delete a mutual connection between two users.
+        Removes TRUSTS edges in both directions so the connection disappears for both users."""
         g = graph_client.get_traversal()
         try:
-            edge = (
-                g.V().has('User', 'user_id', from_user_id)
-                .outE('TRUSTS')
-                .where(__.inV().has('User', 'user_id', to_user_id))
-                .toList()
-            )
-            if not edge:
+            edge_exists = bool(self._get_trust_edges(g, from_user_id, to_user_id))
+            reverse_exists = bool(self._get_trust_edges(g, to_user_id, from_user_id))
+            if not edge_exists and not reverse_exists:
                 return False
             
-            # Drop the edge
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .drop() \
                 .iterate()
-            
-            # Update mutual flag on reverse edge (no longer mutual)
+
             g.V().has('User', 'user_id', to_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', from_user_id)) \
-                .property('is_mutual', False) \
+                .drop() \
                 .iterate()
+
+            await trust_scoring_service.update_reputation_score(from_user_id)
+            await trust_scoring_service.update_reputation_score(to_user_id)
             
             logger.info(
-                f"🗑️ TRUSTS edge removed: {from_user_id} → {to_user_id} "
+                f"🗑️ TRUSTS connection removed: {from_user_id} ↔ {to_user_id} "
                 f"at {datetime.utcnow().isoformat()} (audit)"
             )
             return True
@@ -375,7 +479,7 @@ class EdgeService:
 
             # Find and update edge
             g.V().has('User', 'user_id', from_user_id) \
-                .outE('TRUSTS') \
+                .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('trust_score', new_trust_score) \
                 .property('updated_at', int(datetime.utcnow().timestamp())) \
@@ -402,7 +506,7 @@ class EdgeService:
             # Safe fetch — .toList() instead of .next() to avoid StopIteration crash
             edge_list = (
                 g.V().has('User', 'user_id', from_user_id)
-                .outE('TRUSTS')
+                .outE('TRUSTS').has('status', 'accepted')
                 .where(__.inV().has('User', 'user_id', to_user_id))
                 .valueMap(True)
                 .toList()
@@ -415,7 +519,7 @@ class EdgeService:
             
             # Update count and last interaction timestamp
             g.V().has('User', 'user_id', from_user_id) \
-                .outE('TRUSTS') \
+                .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('successful_intros', current_count + 1) \
                 .property('last_interaction_at', int(datetime.utcnow().timestamp())) \
@@ -448,7 +552,7 @@ class EdgeService:
             # Safe fetch — .toList() instead of .next() to avoid StopIteration crash
             edge_list = (
                 g.V().has('User', 'user_id', from_user_id)
-                .outE('TRUSTS')
+                .outE('TRUSTS').has('status', 'accepted')
                 .where(__.inV().has('User', 'user_id', to_user_id))
                 .valueMap(True)
                 .toList()
@@ -462,7 +566,7 @@ class EdgeService:
             
             # Update count, reset decay factor, and set last interaction time
             g.V().has('User', 'user_id', from_user_id) \
-                .outE('TRUSTS') \
+                .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('interaction_count', current_count + 1) \
                 .property('interaction_decay_factor', 1.0) \
@@ -520,6 +624,19 @@ class EdgeService:
         except Exception as e:
             logger.error(f"❌ Failed to get trust edges for {user_id}: {str(e)}")
             return []
+
+    async def has_accepted_trust_edge(self, from_user_id: str, to_user_id: str) -> bool:
+        g = graph_client.get_traversal()
+        try:
+            return bool(
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS').has('status', 'accepted')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .toList()
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to check accepted TRUSTS edge: {str(e)}")
+            return False
 
     async def create_founded_edge(self, edge_data: FoundedEdgeCreate) -> FoundedEdgeResponse:
         """Create a FOUNDED edge (User → Startup)"""

@@ -47,7 +47,9 @@ class IntroRepository {
           'requester_id': founderId,
           'founder_id': founderId,
           'investor_id': investorId,
-          'path_nodes': pathUserIds,
+          'path_nodes': pathUserIds.length > 2
+              ? pathUserIds.sublist(1, pathUserIds.length - 1)
+              : <String>[],
           'message': message ?? '',
         },
       );

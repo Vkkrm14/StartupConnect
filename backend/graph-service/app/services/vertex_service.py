@@ -204,7 +204,7 @@ class VertexService:
             raise
     
     async def get_connections(self, user_id: str) -> List[UserResponse]:
-        """Get all users that this user has a TRUSTS edge to (their connections)"""
+        """Get all mutually connected users with accepted TRUSTS edges."""
         g = graph_client.get_traversal()
 
         def fetch():
@@ -212,8 +212,11 @@ class VertexService:
                 return (
                     g.V()
                     .has('User', 'user_id', user_id)
-                    .out('TRUSTS')
+                    .bothE('TRUSTS').has('status', 'accepted')
+                    .where(__.values('is_mutual').is_(True))
+                    .otherV()
                     .hasLabel('User')
+                    .dedup()
                     .valueMap(True)
                     .toList()
                 )

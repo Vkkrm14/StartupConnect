@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, status
 from datetime import datetime
+from typing import Optional
 import uuid
 import logging
 import httpx
@@ -61,6 +62,100 @@ def _build_path_user_ids(intro_doc: dict) -> list:
             seen.add(uid)
             result.append(uid)
     return result
+
+
+def _expected_approver(intro_doc: dict) -> Optional[str]:
+    path_nodes = intro_doc.get("path_nodes", [])
+    current_index = intro_doc.get("current_node_index", 0)
+    if 0 <= current_index < len(path_nodes):
+        return path_nodes[current_index]
+    return None
+
+
+def _normalize_intermediary_nodes(
+    requester_id: str,
+    founder_id: str,
+    investor_id: str,
+    path_nodes: list,
+) -> list:
+    excluded_ids = {requester_id, founder_id, investor_id}
+    result = []
+    seen = set()
+    for uid in path_nodes or []:
+        if not uid or uid in excluded_ids or uid in seen:
+            continue
+        seen.add(uid)
+        result.append(uid)
+    return result
+
+
+async def _publish_intro_completed_once(db, intro_doc: dict) -> None:
+    intro_id = intro_doc["intro_id"]
+    if intro_doc.get("completion_event_published_at"):
+        logger.info(f"⏭️ intro_completed already published for {intro_id}")
+        return
+
+    if not kafka_producer:
+        logger.warning(f"⚠️ Kafka producer unavailable; intro_completed not published for {intro_id}")
+        return
+
+    path_user_ids = _build_path_user_ids(intro_doc)
+    await kafka_producer.publish_event(
+        topic="intro-events",
+        event_type="intro_completed",
+        data={
+            "intro_id": intro_id,
+            "path_user_ids": path_user_ids,
+            "requester_id": intro_doc.get("requester_id"),
+            "investor_id": intro_doc.get("investor_id"),
+            "founder_id": intro_doc.get("founder_id"),
+        },
+        key=intro_id
+    )
+    published_at = datetime.utcnow()
+    await db.intro_requests.update_one(
+        {"intro_id": intro_id},
+        {"$set": {"completion_event_published_at": published_at, "updated_at": published_at}}
+    )
+    intro_doc["completion_event_published_at"] = published_at
+    logger.info(f"✅ Published intro_completed for {intro_id} (path: {path_user_ids})")
+
+
+async def _ensure_direct_trust_connection(requester_id: str, investor_id: str, domain_tags: list) -> None:
+    if not requester_id or not investor_id:
+        return
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for from_user_id, to_user_id in (
+            (requester_id, investor_id),
+            (investor_id, requester_id),
+        ):
+            create_response = await client.post(
+                f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
+                json={
+                    "from_user_id": from_user_id,
+                    "to_user_id": to_user_id,
+                    "strength_score": 0.7,
+                    "domain_tags": domain_tags,
+                }
+            )
+            if create_response.status_code not in (200, 201, 400):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to create direct trust edge {from_user_id}->{to_user_id}"
+                )
+
+            accept_response = await client.put(
+                f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/accept",
+                params={"from_user_id": from_user_id, "to_user_id": to_user_id}
+            )
+            if accept_response.status_code not in (200, 404):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to activate direct trust edge {from_user_id}->{to_user_id}"
+                )
+
+    logger.info(f"✅ Direct TRUSTS connection ensured between {requester_id} ↔ {investor_id}")
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Initialize Kafka producer
@@ -85,6 +180,18 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
     4. Final node connects to investor
     """
     db = request.app.state.db
+    normalized_path_nodes = _normalize_intermediary_nodes(
+        requester_id=intro_data.requester_id,
+        founder_id=intro_data.founder_id,
+        investor_id=intro_data.investor_id,
+        path_nodes=intro_data.path_nodes,
+    )
+
+    if not normalized_path_nodes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Intro request requires at least one intermediary in the selected path"
+        )
     
     intro_id = str(uuid.uuid4())
     now = datetime.utcnow()
@@ -94,8 +201,8 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
         "requester_id": intro_data.requester_id,
         "founder_id": intro_data.founder_id,
         "investor_id": intro_data.investor_id,
-        "path_nodes": intro_data.path_nodes,
-        "current_node_index": 1,  # Skip requester (index 0) — they initiated the request
+        "path_nodes": normalized_path_nodes,
+        "current_node_index": 0,
         "status": IntroStatus.PENDING.value,
         "message": intro_data.message,
         "domain": intro_data.domain,
@@ -128,19 +235,19 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
                 logger.warning(f"Failed to publish intro_created event: {e}")
         
         # Send notification to first intermediary
-        if notification_service and len(intro_data.path_nodes) > 0:
+        if notification_service and len(normalized_path_nodes) > 0:
             try:
                 await notification_service.send_intro_request_notification(
                     intro_id=intro_id,
                     requester_name=intro_data.requester_id,
                     target_name=intro_data.investor_id,
-                    intermediary_id=intro_data.path_nodes[0],
+                    intermediary_id=normalized_path_nodes[0],
                     message=intro_data.message
                 )
             except Exception as e:
                 logger.warning(f"Failed to send notification: {e}")
         
-        all_ids = list(set([intro_data.requester_id, intro_data.founder_id, intro_data.investor_id] + intro_data.path_nodes))
+        all_ids = list(set([intro_data.requester_id, intro_data.founder_id, intro_data.investor_id] + normalized_path_nodes))
         names = await resolve_names(all_ids)
 
         return IntroRequestResponse(
@@ -148,8 +255,8 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
             requester_id=intro_data.requester_id,
             founder_id=intro_data.founder_id,
             investor_id=intro_data.investor_id,
-            path_nodes=intro_data.path_nodes,
-            current_node_index=1,  # Skip requester at index 0
+            path_nodes=normalized_path_nodes,
+            current_node_index=0,
             status=IntroStatus.PENDING,
             message=intro_data.message,
             created_at=now,
@@ -157,7 +264,7 @@ async def create_intro_request(request: Request, intro_data: IntroRequestCreate)
             requester_name=names.get(intro_data.requester_id),
             founder_name=names.get(intro_data.founder_id),
             investor_name=names.get(intro_data.investor_id),
-            path_node_names=[names.get(uid, uid[:8]) for uid in intro_data.path_nodes],
+            path_node_names=[names.get(uid, uid[:8]) for uid in normalized_path_nodes],
         )
     except Exception as e:
         logger.error(f"❌ Failed to create intro request: {str(e)}")
@@ -258,16 +365,32 @@ async def approve_intro_by_id(request: Request, intro_id: str):
     user_id = body.get("user_id") or body.get("approver_id")
     message = body.get("message") or body.get("comment", "")
 
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="approver_id is required")
+
     intro_doc = await db.intro_requests.find_one({"intro_id": intro_id})
     if not intro_doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Intro {intro_id} not found")
 
     current_index = intro_doc.get("current_node_index", 0)
     path_nodes = intro_doc.get("path_nodes", [])
+    expected_approver = _expected_approver(intro_doc)
+
+    if expected_approver is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Intro has no pending approver"
+        )
+
+    if user_id != expected_approver:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to approve this step"
+        )
+
     new_index = current_index + 1
-    # Keep pending while chain is in progress; only set approved when ALL nodes have approved
     chain_complete = new_index >= len(path_nodes)
-    new_status = IntroStatus.APPROVED.value if chain_complete else IntroStatus.PENDING.value
+    new_status = IntroStatus.COMPLETED.value if chain_complete else IntroStatus.APPROVED.value
 
     await db.intro_requests.update_one(
         {"intro_id": intro_id},
@@ -278,7 +401,6 @@ async def approve_intro_by_id(request: Request, intro_id: str):
     )
     logger.info(f"✅ Intro {intro_id} approved by {user_id}")
     if chain_complete:
-        # Create TRUSTS edges between requester and investor in the graph
         requester_id = intro_doc.get("requester_id")
         investor_id  = intro_doc.get("investor_id")
         domain_tags  = (
@@ -286,61 +408,9 @@ async def approve_intro_by_id(request: Request, intro_id: str):
             if isinstance(intro_doc.get("domain"), list)
             else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
         )
-        if requester_id and investor_id:
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    # requester → investor
-                    await client.post(
-                        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
-                        json={
-                            "from_user_id": requester_id,
-                            "to_user_id":   investor_id,
-                            "trust_score":  0.75,
-                            "strength_score": 0.7,
-                            "domain_tags":  domain_tags
-                        }
-                    )
-                    # investor → requester (mutual)
-                    await client.post(
-                        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
-                        json={
-                            "from_user_id": investor_id,
-                            "to_user_id":   requester_id,
-                            "trust_score":  0.75,
-                            "strength_score": 0.7,
-                            "domain_tags":  domain_tags
-                        }
-                    )
-                logger.info(f"✅ TRUSTS edges created between {requester_id} ↔ {investor_id}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not create TRUSTS edge after intro approval: {e}")
-
-        # ── Publish intro_completed so graph-service increments successful_intros ──
-        # path_user_ids = full chain: requester → intermediaries → investor
-        path_user_ids = _build_path_user_ids(intro_doc)
-        if kafka_producer:
-            try:
-                await kafka_producer.publish_event(
-                    topic="intro-events",
-                    event_type="intro_completed",
-                    data={
-                        "intro_id":      intro_id,
-                        "path_user_ids": path_user_ids,
-                        "requester_id":  intro_doc.get("requester_id"),
-                        "investor_id":   intro_doc.get("investor_id"),
-                        "founder_id":    intro_doc.get("founder_id"),
-                    },
-                    key=intro_id
-                )
-                logger.info(
-                    f"✅ Published intro_completed for {intro_id} "
-                    f"(path: {path_user_ids})"
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to publish intro_completed event: {e}")
-        # ─────────────────────────────────────────────────────────────────────────
-
-        return {"message": "Introduction fully approved by all parties!", "status": "approved"}
+        await _ensure_direct_trust_connection(requester_id, investor_id, domain_tags)
+        await _publish_intro_completed_once(db, intro_doc)
+        return {"message": "Introduction fully approved by all parties!", "status": "completed"}
     return {"message": "Approval recorded, forwarded to next node", "next_approver": path_nodes[new_index] if new_index < len(path_nodes) else None}
 
 
@@ -352,9 +422,25 @@ async def decline_intro_by_id(request: Request, intro_id: str):
     user_id = body.get("user_id") or body.get("approver_id")
     message = body.get("message") or body.get("comment", "")
 
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="approver_id is required")
+
     intro_doc = await db.intro_requests.find_one({"intro_id": intro_id})
     if not intro_doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Intro {intro_id} not found")
+
+    expected_approver = _expected_approver(intro_doc)
+    if expected_approver is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Intro has no pending approver"
+        )
+
+    if user_id != expected_approver:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to decline this step"
+        )
 
     await db.intro_requests.update_one(
         {"intro_id": intro_id},
@@ -376,35 +462,19 @@ async def complete_intro_by_id(request: Request, intro_id: str):
     if not intro_doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Intro {intro_id} not found")
 
+    if intro_doc.get("status") != IntroStatus.COMPLETED.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Intro cannot be force-completed before all approvals are finished"
+        )
+
     await db.intro_requests.update_one(
         {"intro_id": intro_id},
         {"$set": {"status": IntroStatus.COMPLETED.value, "updated_at": datetime.utcnow()}}
     )
     logger.info(f"✅ Intro {intro_id} marked as completed")
 
-    # ── Publish intro_completed so graph-service increments successful_intros ──
-    path_user_ids = _build_path_user_ids(intro_doc)
-    if kafka_producer:
-        try:
-            await kafka_producer.publish_event(
-                topic="intro-events",
-                event_type="intro_completed",
-                data={
-                    "intro_id":      intro_id,
-                    "path_user_ids": path_user_ids,
-                    "requester_id":  intro_doc.get("requester_id"),
-                    "investor_id":   intro_doc.get("investor_id"),
-                    "founder_id":    intro_doc.get("founder_id"),
-                },
-                key=intro_id
-            )
-            logger.info(
-                f"✅ Published intro_completed for {intro_id} "
-                f"(path: {path_user_ids})"
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to publish intro_completed event: {e}")
-    # ─────────────────────────────────────────────────────────────────────────
+    await _publish_intro_completed_once(db, intro_doc)
 
     return {"message": "Intro request completed"}
 
@@ -536,29 +606,15 @@ async def approve_or_decline_intro(request: Request, action: ApprovalAction):
         logger.info(f"✅ Intro {action.intro_id} approved by {action.approver_id}")
         
         if new_status == IntroStatus.COMPLETED.value:
-            # ── Publish intro_completed so graph-service increments successful_intros ──
-            path_user_ids = _build_path_user_ids(intro_doc)
-            if kafka_producer:
-                try:
-                    await kafka_producer.publish_event(
-                        topic="intro-events",
-                        event_type="intro_completed",
-                        data={
-                            "intro_id":      action.intro_id,
-                            "path_user_ids": path_user_ids,
-                            "requester_id":  intro_doc.get("requester_id"),
-                            "investor_id":   intro_doc.get("investor_id"),
-                            "founder_id":    intro_doc.get("founder_id"),
-                        },
-                        key=action.intro_id
-                    )
-                    logger.info(
-                        f"✅ Published intro_completed for {action.intro_id} "
-                        f"(path: {path_user_ids})"
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to publish intro_completed event: {e}")
-            # ─────────────────────────────────────────────────────────────────────────
+            requester_id = intro_doc.get("requester_id")
+            investor_id = intro_doc.get("investor_id")
+            domain_tags = (
+                intro_doc.get("domain", [])
+                if isinstance(intro_doc.get("domain"), list)
+                else ([intro_doc["domain"]] if intro_doc.get("domain") else [])
+            )
+            await _ensure_direct_trust_connection(requester_id, investor_id, domain_tags)
+            await _publish_intro_completed_once(db, intro_doc)
             return {"message": "Intro request completed!", "status": "completed"}
         else:
             return {

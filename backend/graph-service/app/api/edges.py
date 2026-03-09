@@ -96,7 +96,7 @@ async def get_user_trust_edges(
 
 @router.delete("/trusts")
 async def delete_trusts_edge(from_user_id: str, to_user_id: str):
-    """Delete a TRUSTS edge between two users"""
+    """Delete a mutual connection between two users"""
     success = await edge_service.delete_trusts_edge(from_user_id, to_user_id)
     if not success:
         raise HTTPException(
@@ -104,6 +104,19 @@ async def delete_trusts_edge(from_user_id: str, to_user_id: str):
             detail="TRUSTS edge not found"
         )
     return {"message": "TRUSTS edge deleted", "from_user_id": from_user_id, "to_user_id": to_user_id}
+
+@router.get("/trusts/connected/{from_user_id}/{to_user_id}")
+async def get_connection_status(from_user_id: str, to_user_id: str):
+    """Check whether two users are mutually connected via accepted trust edges."""
+    forward_connected = await edge_service.has_accepted_trust_edge(from_user_id, to_user_id)
+    reverse_connected = await edge_service.has_accepted_trust_edge(to_user_id, from_user_id)
+    return {
+        "from_user_id": from_user_id,
+        "to_user_id": to_user_id,
+        "is_connected": forward_connected and reverse_connected,
+        "forward_connected": forward_connected,
+        "reverse_connected": reverse_connected,
+    }
 
 @router.delete("/founded")
 async def delete_founded_edge(user_id: str, startup_id: str):

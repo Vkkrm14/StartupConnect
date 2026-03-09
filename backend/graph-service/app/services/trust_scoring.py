@@ -96,7 +96,7 @@ class TrustScoringService:
         try:
             edge_data = (
                 g.V().has('User', 'user_id', from_user_id)
-                .outE('TRUSTS')
+                .outE('TRUSTS').has('status', 'accepted')
                 .where(__.inV().has('User', 'user_id', to_user_id))
                 .valueMap(True)
                 .next()
@@ -143,7 +143,7 @@ class TrustScoringService:
         try:
             edge_data = (
                 g.V().has('User', 'user_id', from_user_id)
-                .outE('TRUSTS')
+                .outE('TRUSTS').has('status', 'accepted')
                 .where(__.inV().has('User', 'user_id', to_user_id))
                 .valueMap(True)
                 .next()
@@ -175,7 +175,7 @@ class TrustScoringService:
         # ── Update edge counters; reset decay factor + recency to 1.0 ─────────
         (
             g.V().has('User', 'user_id', from_user_id)
-            .outE('TRUSTS')
+            .outE('TRUSTS').has('status', 'accepted')
             .where(__.inV().has('User', 'user_id', to_user_id))
             .property('interaction_count',       new_count)
             .property('last_interaction_at',      now)
@@ -193,7 +193,7 @@ class TrustScoringService:
         )
         (
             g.V().has('User', 'user_id', from_user_id)
-            .outE('TRUSTS')
+            .outE('TRUSTS').has('status', 'accepted')
             .where(__.inV().has('User', 'user_id', to_user_id))
             .property('trust_score', new_trust)
             .iterate()
@@ -241,7 +241,7 @@ class TrustScoringService:
 
         try:
             all_edges = (
-                g.E().hasLabel('TRUSTS')
+                g.E().hasLabel('TRUSTS').has('status', 'accepted')
                 .project('edge_id', 'from_uid', 'to_uid',
                          'interaction_count', 'successful_intros',
                          'last_interaction_at', 'interaction_decay_factor')
@@ -275,7 +275,7 @@ class TrustScoringService:
                 # Persist decayed factor
                 (
                     g.V().has('User', 'user_id', from_uid)
-                    .outE('TRUSTS')
+                    .outE('TRUSTS').has('status', 'accepted')
                     .where(__.inV().has('User', 'user_id', to_uid))
                     .property('interaction_decay_factor', new_factor)
                     .iterate()
@@ -290,7 +290,7 @@ class TrustScoringService:
                 )
                 (
                     g.V().has('User', 'user_id', from_uid)
-                    .outE('TRUSTS')
+                    .outE('TRUSTS').has('status', 'accepted')
                     .where(__.inV().has('User', 'user_id', to_uid))
                     .property('trust_score', new_trust)
                     .iterate()
@@ -323,7 +323,7 @@ class TrustScoringService:
             # Get all outgoing TRUSTS edges
             outgoing_edges = (
                 g.V().has('User', 'user_id', user_id)
-                .outE('TRUSTS')
+                .outE('TRUSTS').has('status', 'accepted')
                 .valueMap(True)
                 .toList()
             )
@@ -333,7 +333,7 @@ class TrustScoringService:
             else:
                 # Average trust score
                 avg_trust = sum(
-                    e.get('trust_score', [0.5])[0] for e in outgoing_edges
+                    e.get('trust_score', [0.0])[0] for e in outgoing_edges
                 ) / len(outgoing_edges)
                 
                 # Successful intro rate:
@@ -342,10 +342,11 @@ class TrustScoringService:
                 total_interactions = sum(e.get('interaction_count', [0])[0] for e in outgoing_edges)
                 total_successful   = sum(e.get('successful_intros',  [0])[0] for e in outgoing_edges)
                 
-                success_rate = total_successful / total_interactions if total_interactions > 0 else 0.0
+                success_denominator = max(total_interactions, total_successful, 1)
+                success_rate = min(total_successful / success_denominator, 1.0)
                 
                 # Weighted reputation
-                reputation = (avg_trust * 0.6) + (success_rate * 0.4)
+                reputation = min(max((avg_trust * 0.6) + (success_rate * 0.4), 0.0), 1.0)
             
             # Update vertex
             g.V().has('User', 'user_id', user_id) \
@@ -357,7 +358,7 @@ class TrustScoringService:
             
         except Exception as e:
             logger.error(f"❌ Failed to update reputation: {str(e)}")
-            return 0.5
+            return 0.0
     
     async def decay_trust_scores(self, days_threshold: int = 180):
         """
@@ -378,7 +379,7 @@ class TrustScoringService:
 
         try:
             all_edges = (
-                g.E().hasLabel('TRUSTS')
+                g.E().hasLabel('TRUSTS').has('status', 'accepted')
                 .project('from_uid', 'to_uid',
                          'last_interaction_at', 'interaction_count',
                          'successful_intros',   'interaction_decay_factor')
@@ -422,7 +423,7 @@ class TrustScoringService:
 
                 (
                     g.V().has('User', 'user_id', from_uid)
-                    .outE('TRUSTS')
+                    .outE('TRUSTS').has('status', 'accepted')
                     .where(__.inV().has('User', 'user_id', to_uid))
                     .property('recency_score', new_recency)
                     .property('trust_score',   new_trust)
@@ -452,14 +453,14 @@ class TrustScoringService:
         
         try:
             # Degree centrality
-            out_degree = g.V().has('User', 'user_id', user_id).outE('TRUSTS').count().next()
-            in_degree = g.V().has('User', 'user_id', user_id).inE('TRUSTS').count().next()
+            out_degree = g.V().has('User', 'user_id', user_id).outE('TRUSTS').has('status', 'accepted').count().next()
+            in_degree = g.V().has('User', 'user_id', user_id).inE('TRUSTS').has('status', 'accepted').count().next()
             total_degree = out_degree + in_degree
             
             # Trust-weighted degree
             trust_sum = (
                 g.V().has('User', 'user_id', user_id)
-                .outE('TRUSTS')
+                .outE('TRUSTS').has('status', 'accepted')
                 .values('trust_score')
                 .sum()
                 .next()
@@ -469,7 +470,7 @@ class TrustScoringService:
             # (Simplified metric - full betweenness is computationally expensive)
             betweenness_approx = (
                 g.V().has('User', 'user_id', user_id)
-                .both('TRUSTS')
+                .bothE('TRUSTS').has('status', 'accepted').bothV()
                 .dedup()
                 .count()
                 .next()
@@ -516,13 +517,19 @@ class TrustScoringService:
                 to_id = path_user_ids[i + 1]
                 
                 # Get current edge data
-                edge_data = (
+                edge_list = (
                     g.V().has('User', 'user_id', from_id)
-                    .outE('TRUSTS')
+                    .outE('TRUSTS').has('status', 'accepted')
                     .where(__.inV().has('User', 'user_id', to_id))
                     .valueMap(True)
-                    .next()
+                    .toList()
                 )
+                if not edge_list:
+                    logger.warning(
+                        f"Skipping trust boost for missing accepted edge {from_id}→{to_id}"
+                    )
+                    continue
+                edge_data = edge_list[0]
                 
                 current_intros = edge_data.get('successful_intros', [0])[0]
                 
@@ -530,7 +537,7 @@ class TrustScoringService:
                 now_ts      = datetime.utcnow().timestamp()
                 new_recency = self.compute_recency_score(now_ts)  # 1.0 (just interacted)
                 g.V().has('User', 'user_id', from_id) \
-                    .outE('TRUSTS') \
+                    .outE('TRUSTS').has('status', 'accepted') \
                     .where(__.inV().has('User', 'user_id', to_id)) \
                     .property('successful_intros',    current_intros + 1) \
                     .property('last_interaction_at',  now_ts) \
@@ -542,7 +549,7 @@ class TrustScoringService:
                 
                 # Persist the recalculated score
                 g.V().has('User', 'user_id', from_id) \
-                    .outE('TRUSTS') \
+                    .outE('TRUSTS').has('status', 'accepted') \
                     .where(__.inV().has('User', 'user_id', to_id)) \
                     .property('trust_score', new_score) \
                     .iterate()

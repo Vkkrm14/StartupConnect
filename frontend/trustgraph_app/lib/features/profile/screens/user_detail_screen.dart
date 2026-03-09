@@ -73,12 +73,11 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   Future<void> _checkConnectionStatus() async {
     if (_currentUserId == null) return;
     try {
-      // Check if there's a trust edge from current user to this user
-      final score = await _connectionRepository.getTrustScore(
+      final connection = await _connectionRepository.getConnectionStatus(
         fromUserId: _currentUserId!,
         toUserId: widget.userId,
       );
-      if (score != null) {
+      if (connection != null && connection['is_connected'] == true) {
         setState(() => _isConnected = true);
         return;
       }

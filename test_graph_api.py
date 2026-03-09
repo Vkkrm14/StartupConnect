@@ -189,13 +189,12 @@ def test_create_trust_edge(from_user_id: str, to_user_id: str):
     print("🤝 Testing Create TRUSTS Edge Endpoint")
     print("="*60)
     
+    # Note: trust_score and interaction_count are server-owned.
+    # Clients only send strength_score, endorsement_count, and domain_tags.
     payload = {
         "from_user_id": from_user_id,
         "to_user_id": to_user_id,
-        "trust_score": 0.75,
         "strength_score": 0.8,
-        "recency_score": 0.9,
-        "interaction_count": 10,
         "endorsement_count": 2,
         "domain_tags": ["test"]
     }

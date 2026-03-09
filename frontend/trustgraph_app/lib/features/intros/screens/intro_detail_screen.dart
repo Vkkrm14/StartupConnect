@@ -198,9 +198,10 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
                       const SizedBox(height: 32),
 
                       // Action Buttons — only show for the node whose turn it is in the chain
-                      if ((_intro!.status.toLowerCase() == 'pending') &&
+                      if ((_intro!.status.toLowerCase() == 'pending' ||
+                              _intro!.status.toLowerCase() == 'approved') &&
                           _currentUserId != null &&
-                          _intro!.currentNodeIndex > 0 &&
+                          _intro!.currentNodeIndex >= 0 &&
                           _intro!.currentNodeIndex < _intro!.pathNodes.length &&
                           _currentUserId == _intro!.pathNodes[_intro!.currentNodeIndex]) ...[
                         Row(
@@ -260,15 +261,9 @@ class _IntroDetailScreenState extends State<IntroDetailScreen> {
         Color avatarColor;
         IconData? statusIcon;
 
-        if (index == 0) {
-          // Requester — always green (they initiated)
-          nodeColor = Colors.green.shade400.withOpacity(0.2);
-          borderColor = Colors.green;
-          avatarColor = Colors.green;
-          statusIcon = Icons.check;
-        } else if (index < currentIndex) {
+        if (index < currentIndex) {
           // Already approved
-          nodeColor = Colors.green.shade500.withOpacity(0.2);
+          nodeColor = Colors.green.shade400.withOpacity(0.2);
           borderColor = Colors.green;
           avatarColor = Colors.green;
           statusIcon = Icons.check;

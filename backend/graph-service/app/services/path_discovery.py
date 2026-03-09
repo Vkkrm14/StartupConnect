@@ -105,7 +105,7 @@ class PathDiscoveryService:
                     try:
                         paths_at_hop = (
                             g.V().has('User', 'user_id', founder_id)
-                            .repeat(__.out('TRUSTS'))
+                            .repeat(__.outE('TRUSTS').has('status', 'accepted').inV().simplePath())
                             .times(hop_count)
                             .has('User', 'user_id', investor_id)
                             .path().by('user_id')
@@ -117,7 +117,8 @@ class PathDiscoveryService:
                             for path in paths_at_hop:
                                 # Convert Path object to list of user_ids
                                 user_ids = [str(uid) for uid in path]
-                                all_paths.append(user_ids)
+                                if len(user_ids) == len(set(user_ids)):
+                                    all_paths.append(user_ids)
                     
                     except Exception as e:
                         logger.error(f"Error finding {hop_count}-hop paths: {e}")
@@ -220,7 +221,7 @@ class PathDiscoveryService:
                 def get_edge_props():
                     return (
                         g.V().has('User', 'user_id', from_id)
-                        .outE('TRUSTS')
+                        .outE('TRUSTS').has('status', 'accepted')
                         .where(__.inV().has('User', 'user_id', to_id))
                         .valueMap(True)
                         .next()
@@ -240,10 +241,10 @@ class PathDiscoveryService:
                 # Check for mutual trust (bidirectional)
                 def check_mutual():
                     return (
-                        g.V().has('User', 'user_id', to_id)
-                        .outE('TRUSTS')
-                        .where(__.inV().has('User', 'user_id', from_id))
-                        .hasNext()
+                    g.V().has('User', 'user_id', to_id)
+                    .outE('TRUSTS').has('status', 'accepted')
+                    .where(__.inV().has('User', 'user_id', from_id))
+                    .hasNext()
                     )
                 
                 mutual_exists = await loop.run_in_executor(None, check_mutual)
@@ -283,8 +284,8 @@ class PathDiscoveryService:
         
         # Weighted average with mutual trust boosting
         edge_scores = [
-            t * r * m 
-            for t, r, m in zip(trust_scores, recency_scores, mutual_boosts)
+            t * e['strength'] * r * m
+            for t, e, r, m in zip(trust_scores, edges, recency_scores, mutual_boosts)
         ]
         
         path_score = sum(edge_scores) / hop_count
@@ -296,7 +297,9 @@ class PathDiscoveryService:
         # Calculate success probability (simplified model)
         # Real implementation would use ML model trained on historical intro outcomes
         base_success = 0.5
-        trust_factor = sum(trust_scores) / len(trust_scores)
+        trust_factor = sum(
+            t * e['strength'] for t, e in zip(trust_scores, edges)
+        ) / len(trust_scores)
         mutual_factor = sum(1 for m in mutual_boosts if m > 1.0) / len(mutual_boosts)
         
         success_probability = min(

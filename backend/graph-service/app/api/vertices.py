@@ -72,7 +72,7 @@ async def get_user_by_email(email: str):
 
 @router.get("/users/{user_id}/connections", response_model=List[UserResponse])
 async def get_user_connections(user_id: str):
-    """Get all users that this user is connected to via TRUSTS edges"""
+    """Get all users that this user is mutually connected to"""
     try:
         return await vertex_service.get_connections(user_id)
     except Exception as e:
