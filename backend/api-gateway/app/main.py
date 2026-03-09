@@ -143,6 +143,146 @@ async def create_trust_edge(request: Request):
     )
     return response.json()
 
+# ========================================
+# Direct Edges Service Proxy Routes
+# ========================================
+
+@app.post("/api/v1/edges/trusts")
+async def create_trusts_edge_direct(request: Request):
+    """Proxy to graph service - create TRUSTS edge (direct route)"""
+    body = await request.json()
+    response = await http_client.post(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
+        json=body
+    )
+    return response.json()
+
+@app.put("/api/v1/edges/trusts/accept")
+async def accept_trusts_edge(from_user_id: str, to_user_id: str):
+    """Proxy to graph service - accept TRUSTS edge"""
+    response = await http_client.put(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/accept",
+        params={"from_user_id": from_user_id, "to_user_id": to_user_id}
+    )
+    return response.json()
+
+@app.put("/api/v1/edges/trusts/reject")
+async def reject_trusts_edge(from_user_id: str, to_user_id: str):
+    """Proxy to graph service - reject TRUSTS edge"""
+    response = await http_client.put(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/reject",
+        params={"from_user_id": from_user_id, "to_user_id": to_user_id}
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/trusts/pending/{user_id}")
+async def get_pending_trust_edges(user_id: str):
+    """Proxy to graph service - get pending TRUSTS edges for user"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/pending/{user_id}"
+    )
+    return response.json()
+
+# ---- DISTRUSTS ----
+
+@app.post("/api/v1/edges/distrusts")
+async def create_distrusts_edge(request: Request):
+    """Proxy to graph service - create DISTRUSTS edge"""
+    body = await request.json()
+    response = await http_client.post(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/distrusts",
+        json=body
+    )
+    return response.json()
+
+@app.put("/api/v1/edges/distrusts/activate")
+async def activate_distrusts_edge(request: Request):
+    """Proxy to graph service - moderator activates a DISTRUSTS edge"""
+    body = await request.json()
+    response = await http_client.put(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/distrusts/activate",
+        json=body
+    )
+    return response.json()
+
+@app.delete("/api/v1/edges/distrusts")
+async def delete_distrusts_edge(request: Request):
+    """Proxy to graph service - delete/expire a DISTRUSTS edge"""
+    body = await request.json()
+    response = await http_client.request(
+        "DELETE",
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/distrusts",
+        json=body
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/distrusts/by/{user_id}")
+async def get_distrusts_by_user(user_id: str):
+    """Proxy to graph service - get DISTRUSTS edges filed by a user"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/distrusts/by/{user_id}"
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/distrusts/for/{user_id}")
+async def get_distrusts_for_user(user_id: str):
+    """Proxy to graph service - get DISTRUSTS edges targeting a user"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/distrusts/for/{user_id}"
+    )
+    return response.json()
+
+# ---- VOUCHES ----
+
+@app.post("/api/v1/edges/vouches")
+async def create_vouch(request: Request):
+    """Proxy to graph service - create a VOUCH edge"""
+    body = await request.json()
+    response = await http_client.post(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/vouches",
+        json=body
+    )
+    return response.json()
+
+@app.delete("/api/v1/edges/vouches/revoke")
+async def revoke_vouch(request: Request):
+    """Proxy to graph service - revoke a VOUCH edge"""
+    body = await request.json()
+    response = await http_client.request(
+        "DELETE",
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/vouches/revoke",
+        json=body
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/vouches/for/{user_id}")
+async def get_vouches_for_user(user_id: str):
+    """Proxy to graph service - get active vouches targeting a user"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/vouches/for/{user_id}"
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/vouches/by/{user_id}")
+async def get_vouches_by_user(user_id: str):
+    """Proxy to graph service - get vouches created by a user"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/vouches/by/{user_id}"
+    )
+    return response.json()
+
+# ---- Admin ----
+
+@app.post("/api/v1/edges/admin/eigen-trust-refresh")
+async def trigger_eigen_trust_refresh(request: Request):
+    """Proxy to graph service - trigger EigenTrust batch recomputation"""
+    body = await request.json()
+    response = await http_client.post(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/admin/eigen-trust-refresh",
+        json=body
+    )
+    return response.json()
+
 @app.post("/api/v1/paths/discover")
 async def discover_paths(request: Request):
     """Proxy to graph service - discover intro paths"""

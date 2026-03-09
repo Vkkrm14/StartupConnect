@@ -105,7 +105,12 @@ class PathDiscoveryService:
                     try:
                         paths_at_hop = (
                             g.V().has('User', 'user_id', founder_id)
-                            .repeat(__.outE('TRUSTS').has('status', 'accepted').inV().simplePath())
+                            .repeat(
+                                __.outE('TRUSTS')
+                                .has('status', 'accepted')
+                                .not_(__.has('suspicion_flag', True))
+                                .inV().simplePath()
+                            )
                             .times(hop_count)
                             .has('User', 'user_id', investor_id)
                             .path()

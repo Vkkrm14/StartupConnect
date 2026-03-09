@@ -48,6 +48,10 @@ async def _daily_interaction_decay_loop():
             logger.info("🕒 Running daily recency_score refresh...")
             refreshed = await trust_scoring_service.decay_trust_scores()
             logger.info(f"🕒 Recency refresh complete: {refreshed} edges updated")
+
+            logger.info("🧮 Running EigenTrust global rank computation...")
+            eigen_updated = await trust_scoring_service.compute_eigen_trust_ranks()
+            logger.info(f"🧮 EigenTrust complete: {eigen_updated} users updated")
         except asyncio.CancelledError:
             break
         except Exception as e:

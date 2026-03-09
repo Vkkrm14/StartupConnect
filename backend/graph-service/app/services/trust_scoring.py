@@ -316,35 +316,33 @@ class TrustScoringService:
     
     async def update_reputation_score(self, user_id: str) -> float:
         """
-        Calculate and update user's reputation score
-        
-        Based on:
-        - Outgoing trust scores
-        - Successful intro rate
-        - Network centrality
+        Calculate and update user's reputation score.
+
+        4-component formula (weights sum to 1.0):
+          rep = avg_outgoing_trust  * 0.35
+              + intro_success_rate  * 0.30
+              + trust_weighted_in   * 0.20   (how much trusted peers trust you)
+              + vouch_score         * 0.15
         """
         g = graph_client.get_traversal()
-        
+
         try:
-            # Get all outgoing TRUSTS edges
+            # ── Outgoing edge stats ────────────────────────────────────────────
             outgoing_edges = (
                 g.V().has('User', 'user_id', user_id)
                 .outE('TRUSTS').has('status', 'accepted')
                 .valueMap(True)
                 .toList()
             )
-            
+
             if not outgoing_edges:
-                reputation = 0.0
+                avg_trust    = 0.0
+                success_rate = 0.0
             else:
-                # Average trust score
                 avg_trust = sum(
                     float(self._unwrap_value(e.get('trust_score'), 0.0)) for e in outgoing_edges
                 ) / len(outgoing_edges)
-                
-                # Successful intro rate:
-                # success_rate = total_successful_intros / total_interactions
-                # Measures: "what fraction of my interactions led to a completed intro?"
+
                 total_interactions = sum(
                     int(self._unwrap_value(e.get('interaction_count'), 0))
                     for e in outgoing_edges
@@ -353,21 +351,44 @@ class TrustScoringService:
                     int(self._unwrap_value(e.get('successful_intros'), 0))
                     for e in outgoing_edges
                 )
-                
                 success_denominator = max(total_interactions, total_successful, 1)
                 success_rate = min(total_successful / success_denominator, 1.0)
-                
-                # Weighted reputation
-                reputation = min(max((avg_trust * 0.6) + (success_rate * 0.4), 0.0), 1.0)
-            
+
+            # ── Trust-weighted in-degree (who trusts you, weighted by their score) ─
+            incoming_edges = (
+                g.V().has('User', 'user_id', user_id)
+                .inE('TRUSTS').has('status', 'accepted')
+                .valueMap(True)
+                .toList()
+            )
+            if not incoming_edges:
+                trust_weighted_in = 0.0
+            else:
+                trust_weighted_in = min(
+                    sum(float(self._unwrap_value(e.get('trust_score'), 0.0))
+                        for e in incoming_edges) / len(incoming_edges),
+                    1.0
+                )
+
+            # ── Vouch score ────────────────────────────────────────────────────
+            vouch_score = await self.compute_vouch_score(user_id)
+
+            reputation = min(max(
+                avg_trust        * 0.35
+                + success_rate   * 0.30
+                + trust_weighted_in * 0.20
+                + vouch_score    * 0.15,
+                0.0
+            ), 1.0)
+
             # Update vertex
             g.V().has('User', 'user_id', user_id) \
                 .property('reputation_score', reputation) \
                 .iterate()
-            
+
             logger.info(f"✅ Updated reputation for {user_id}: {reputation:.3f}")
             return round(reputation, 3)
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to update reputation: {str(e)}")
             return 0.0
@@ -578,6 +599,196 @@ class TrustScoringService:
             
         except Exception as e:
             logger.error(f"❌ Failed to boost trust: {str(e)}")
+            return 0
+
+    # ═══════════════════════════════════════════════════════════════
+    # VOUCH SCORE
+    # ═══════════════════════════════════════════════════════════════
+
+    async def compute_vouch_score(self, user_id: str) -> float:
+        """
+        Compute a vouch score (0.0–1.0) for a user from their VOUCHES edges.
+
+        Formula:
+          vouch_score = mean(vouch_strength over active vouches), capped at 1.0
+          Returns 0.0 if no vouches.
+
+        The score is bounded to 0.10 maximum contribution in reputation_score
+        to prevent vouch-farming from dominating.
+        """
+        g = graph_client.get_traversal()
+        try:
+            vouches = (
+                g.V().has('User', 'user_id', user_id)
+                .inE('VOUCHES')
+                .has('is_revoked', False)
+                .valueMap(True)
+                .toList()
+            )
+            if not vouches:
+                return 0.0
+            total_strength = sum(
+                float(self._unwrap_value(v.get('vouch_strength'), 0.5))
+                for v in vouches
+            )
+            return round(min(total_strength / len(vouches), 1.0), 4)
+        except Exception as e:
+            logger.error(f"❌ compute_vouch_score failed: {e}")
+            return 0.0
+
+    # ═══════════════════════════════════════════════════════════════
+    # ANTI-GAMING: SUSPICION FLAG
+    # ═══════════════════════════════════════════════════════════════
+
+    async def check_and_flag_suspicion(
+        self, from_user_id: str, to_user_id: str
+    ) -> bool:
+        """
+        Detect and flag suspicious reciprocal trust edges.
+
+        A pair is flagged when ALL of:
+          - Both trust scores are similarly high: |T(A→B) - T(B→A)| < 0.05
+          - Total interaction count across both edges is < 3
+            (high trust but no real interaction history → likely fabricated)
+
+        Sets suspicion_flag = True on both edges.
+        Flagged edges are excluded from path discovery traversal.
+        Returns True if suspicion was detected and flagged.
+        """
+        g = graph_client.get_traversal()
+        try:
+            fwd = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS').has('status', 'accepted')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .valueMap(True)
+                .toList()
+            )
+            rev = (
+                g.V().has('User', 'user_id', to_user_id)
+                .outE('TRUSTS').has('status', 'accepted')
+                .where(__.inV().has('User', 'user_id', from_user_id))
+                .valueMap(True)
+                .toList()
+            )
+            if not fwd or not rev:
+                return False
+
+            t_fwd = float(self._unwrap_value(fwd[0].get('trust_score'), 0.0))
+            t_rev = float(self._unwrap_value(rev[0].get('trust_score'), 0.0))
+            n_fwd = int(self._unwrap_value(fwd[0].get('interaction_count'), 0))
+            n_rev = int(self._unwrap_value(rev[0].get('interaction_count'), 0))
+
+            is_suspicious = (abs(t_fwd - t_rev) < 0.05) and ((n_fwd + n_rev) < 3)
+
+            if is_suspicious:
+                (
+                    g.V().has('User', 'user_id', from_user_id)
+                    .outE('TRUSTS').has('status', 'accepted')
+                    .where(__.inV().has('User', 'user_id', to_user_id))
+                    .property('suspicion_flag', True)
+                    .iterate()
+                )
+                (
+                    g.V().has('User', 'user_id', to_user_id)
+                    .outE('TRUSTS').has('status', 'accepted')
+                    .where(__.inV().has('User', 'user_id', from_user_id))
+                    .property('suspicion_flag', True)
+                    .iterate()
+                )
+                logger.warning(
+                    f"⚠️ Suspicion flagged: {from_user_id} ↔ {to_user_id} "
+                    f"(T_fwd={t_fwd:.3f}, T_rev={t_rev:.3f}, interactions={n_fwd + n_rev})"
+                )
+            return is_suspicious
+
+        except Exception as e:
+            logger.error(f"❌ check_and_flag_suspicion failed: {e}")
+            return False
+
+    # ═══════════════════════════════════════════════════════════════
+    # EIGENTRUST — GLOBAL RANK BATCH JOB
+    # ═══════════════════════════════════════════════════════════════
+
+    async def compute_eigen_trust_ranks(self) -> int:
+        """
+        Compute a global EigenTrust rank for every user and persist it as
+        `eigen_trust_rank` on User vertices.
+
+        Algorithm (power iteration, ~50 steps):
+          1. Build normalized transition matrix C where
+               C[j→i] = T(j→i) / Σ_k T(j→k)
+          2. Start with uniform rank vector t[i] = 1/N
+          3. Iterate: t_new[i] = Σ_j C[j→i] * t[j]
+          4. Re-normalize after each step.
+          5. After convergence, persist t[i] to each User vertex.
+
+        A high eigen_trust_rank means many high-trust nodes transitively
+        point to this user — a robust Sybil-resistant reputation signal.
+        """
+        g = graph_client.get_traversal()
+        try:
+            all_edges = (
+                g.E().hasLabel('TRUSTS').has('status', 'accepted')
+                .project('from_uid', 'to_uid', 'trust_score')
+                .by(__.outV().values('user_id'))
+                .by(__.inV().values('user_id'))
+                .by(__.coalesce(__.values('trust_score'), __.constant(0.0)))
+                .toList()
+            )
+
+            if not all_edges:
+                logger.info("⚠️ EigenTrust: no accepted TRUSTS edges found — skipping")
+                return 0
+
+            # Build out-weight sums per node
+            out_weights: Dict[str, float] = {}
+            all_users: set = set()
+            for e in all_edges:
+                src = str(e['from_uid'])
+                dst = str(e['to_uid'])
+                t   = float(e.get('trust_score') or 0.0)
+                out_weights[src] = out_weights.get(src, 0.0) + t
+                all_users.add(src)
+                all_users.add(dst)
+
+            # Normalized transition weights: C[src→dst]
+            transitions: Dict[tuple, float] = {}
+            for e in all_edges:
+                src   = str(e['from_uid'])
+                dst   = str(e['to_uid'])
+                t     = float(e.get('trust_score') or 0.0)
+                denom = out_weights.get(src, 0.0)
+                if denom > 0:
+                    transitions[(src, dst)] = t / denom
+
+            n = len(all_users)
+            rank: Dict[str, float] = {u: 1.0 / n for u in all_users}
+
+            # Power iteration
+            for _ in range(50):
+                new_rank: Dict[str, float] = {u: 0.0 for u in all_users}
+                for (src, dst), weight in transitions.items():
+                    new_rank[dst] = new_rank.get(dst, 0.0) + weight * rank.get(src, 0.0)
+                total = sum(new_rank.values()) or 1.0
+                rank = {u: v / total for u, v in new_rank.items()}
+
+            # Persist to User vertices
+            updated = 0
+            for uid, eigen_rank in rank.items():
+                try:
+                    g.V().has('User', 'user_id', uid) \
+                        .property('eigen_trust_rank', round(eigen_rank, 6)) \
+                        .iterate()
+                    updated += 1
+                except Exception:
+                    pass
+
+            logger.info(f"✅ EigenTrust ranks computed and stored for {updated} users")
+            return updated
+
+        except Exception as e:
+            logger.error(f"❌ compute_eigen_trust_ranks failed: {e}")
             return 0
 
 # Singleton instance

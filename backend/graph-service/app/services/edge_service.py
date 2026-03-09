@@ -2,16 +2,20 @@
 
 from typing import Optional, List
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 from gremlin_python import statics
+from gremlin_python.process.traversal import P
 from gremlin_python.process.graph_traversal import __
 from app.core.graph_client import graph_client
 from app.schemas.edge_schemas import (
     TrustsEdgeCreate, TrustsEdgeResponse,
     FoundedEdgeCreate, FoundedEdgeResponse,
-    InvestedInEdgeCreate, InvestedInEdgeResponse
+    InvestedInEdgeCreate, InvestedInEdgeResponse,
+    DisTrustsEdgeCreate, DisTrustsEdgeResponse,
+    DisTrustsReasonCategory,
+    VouchCreate, VouchResponse,
 )
 from app.services.trust_scoring import trust_scoring_service
 
@@ -27,6 +31,14 @@ ALLOWED_TRUST_CONNECTIONS = {
 
 # Cooldown (seconds) between automatic trust score recalculations
 RECALC_COOLDOWN_SECONDS = 3600  # 1 hour
+
+# Daily velocity limits
+MAX_TRUSTS_PER_DAY   = 20  # max new connection requests per user per 24h
+MAX_VOUCHES_PER_DAY  = 5   # max vouches given per user per 24h
+MAX_DISTRUST_PER_30D = 3   # max distrust reports per user per 30 days
+
+# Minimum account age (days) before certain actions are allowed
+MIN_AGE_DISTRUST_DAYS = 30
 
 
 class EdgeService:
@@ -178,14 +190,36 @@ class EdgeService:
         except Exception as e:
             logger.warning(f"⚠️ Role validation skipped (non-fatal): {e}")
     
+    # ── Velocity limit helper ──
+    def _check_velocity_limit(
+        self, g, user_id: str, edge_label: str, limit: int, window_hours: int = 24
+    ) -> bool:
+        """Return True if the user has hit their daily creation limit for the given edge type."""
+        cutoff_ts = int((datetime.utcnow() - timedelta(hours=window_hours)).timestamp())
+        count = (
+            g.V().has('User', 'user_id', user_id)
+            .outE(edge_label)
+            .has('created_at', P.gte(cutoff_ts))
+            .count()
+            .next()
+        )
+        return int(count) >= limit
+
     async def create_trusts_edge(self, edge_data: TrustsEdgeCreate) -> TrustsEdgeResponse:
         """Create a TRUSTS edge between two users"""
         g = graph_client.get_traversal()
-        
+
         # ── Self-loop prevention ──
         if edge_data.from_user_id == edge_data.to_user_id:
             raise ValueError("User cannot create a trust edge to themselves")
-        
+
+        # ── Velocity limit: max 20 requests per 24h ──
+        if self._check_velocity_limit(g, edge_data.from_user_id, 'TRUSTS', MAX_TRUSTS_PER_DAY):
+            raise ValueError(
+                f"Daily connection request limit ({MAX_TRUSTS_PER_DAY}) reached. "
+                "Please try again tomorrow."
+            )
+
         # ── Role-based connection validation ──
         self._validate_trust_roles(edge_data.from_user_id, edge_data.to_user_id)
         
@@ -233,11 +267,18 @@ class EdgeService:
                 .property('created_at', int(created_at.timestamp()))
             )
             traversal.iterate()
-            
+
             # Add domain tags to the edge
             if edge_data.domain_tags:
                 for tag in edge_data.domain_tags:
                     g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
+
+            # Store per-domain trust scores as a JSON string
+            if edge_data.domain_trust_scores:
+                import json
+                g.E().has('edge_id', edge_id) \
+                    .property('domain_trust_scores', json.dumps(edge_data.domain_trust_scores)) \
+                    .iterate()
             
             logger.info(
                 f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id} (pending connection request)"
@@ -309,7 +350,10 @@ class EdgeService:
 
             await trust_scoring_service.update_reputation_score(from_user_id)
             await trust_scoring_service.update_reputation_score(to_user_id)
-            
+
+            # Anti-gaming: flag suspicious reciprocal edges
+            await trust_scoring_service.check_and_flag_suspicion(from_user_id, to_user_id)
+
             logger.info(f"✅ Accepted TRUSTS edge: {from_user_id} → {to_user_id}")
             return True
         except Exception as e:
@@ -868,3 +912,336 @@ class EdgeService:
         except Exception as e:
             logger.error(f"❌ Failed to create WORKED_WITH edge: {str(e)}")
             raise
+
+    # ═══════════════════════════════════════════════════════════════
+    # DISTRUSTS EDGE
+    # ═══════════════════════════════════════════════════════════════
+
+    async def create_distrusts_edge(
+        self, edge_data: DisTrustsEdgeCreate
+    ) -> DisTrustsEdgeResponse:
+        """
+        File a distrust report (creates a DISTRUSTS edge, initially inactive).
+
+        Guardrails enforced:
+        - No self-reports
+        - Reporter must have an existing (accepted) TRUSTS edge with the target
+          (i.e. they must have had a real relationship — no stranger harassment)
+        - Velocity limit: MAX_DISTRUST_PER_30D per 30-day window
+        - Both-sides mutual-report flag (likely dispute, not genuine distrust)
+        - Edge is inactive until moderator review passes (is_active = False)
+        """
+        g = graph_client.get_traversal()
+
+        if edge_data.from_user_id == edge_data.to_user_id:
+            raise ValueError("Cannot file a distrust report against yourself")
+
+        # ── Require prior accepted relationship ──────────────────────────────
+        had_relationship = bool(
+            g.V().has('User', 'user_id', edge_data.from_user_id)
+            .outE('TRUSTS').has('status', 'accepted')
+            .where(__.inV().has('User', 'user_id', edge_data.to_user_id))
+            .toList()
+        )
+        if not had_relationship:
+            raise ValueError(
+                "A distrust report requires a prior accepted connection with this user"
+            )
+
+        # ── 30-day velocity limit ────────────────────────────────────────────
+        cutoff_30d = int((datetime.utcnow() - timedelta(days=30)).timestamp())
+        recent_count = (
+            g.V().has('User', 'user_id', edge_data.from_user_id)
+            .outE('DISTRUSTS')
+            .has('created_at', P.gte(cutoff_30d))
+            .count()
+            .next()
+        )
+        if int(recent_count) >= MAX_DISTRUST_PER_30D:
+            raise ValueError(
+                f"Distrust report limit ({MAX_DISTRUST_PER_30D} per 30 days) reached"
+            )
+
+        # ── Duplicate prevention ─────────────────────────────────────────────
+        existing = (
+            g.V().has('User', 'user_id', edge_data.from_user_id)
+            .outE('DISTRUSTS')
+            .where(__.inV().has('User', 'user_id', edge_data.to_user_id))
+            .toList()
+        )
+        if existing:
+            raise ValueError("A distrust report already exists for this pair")
+
+        edge_id    = str(uuid.uuid4())
+        created_at = datetime.utcnow()
+        expires_at = created_at + timedelta(days=365)
+
+        # Detect mutual report (both sides report each other within 30 days)
+        reverse_report = bool(
+            g.V().has('User', 'user_id', edge_data.to_user_id)
+            .outE('DISTRUSTS')
+            .has('created_at', P.gte(cutoff_30d))
+            .where(__.inV().has('User', 'user_id', edge_data.from_user_id))
+            .toList()
+        )
+        is_disputed = bool(reverse_report)
+
+        g.V().has('User', 'user_id', edge_data.from_user_id) \
+            .addE('DISTRUSTS') \
+            .to(__.V().has('User', 'user_id', edge_data.to_user_id)) \
+            .property('edge_id',            edge_id) \
+            .property('distrust_score',     edge_data.distrust_score) \
+            .property('reason_category',    edge_data.reason_category.value) \
+            .property('evidence_notes',     edge_data.evidence_notes or '') \
+            .property('is_active',          False) \
+            .property('is_disputed',        is_disputed) \
+            .property('moderator_reviewed', False) \
+            .property('created_at',         int(created_at.timestamp())) \
+            .property('expires_at',         int(expires_at.timestamp())) \
+            .iterate()
+
+        if is_disputed:
+            # Mark the reverse report as disputed too
+            g.V().has('User', 'user_id', edge_data.to_user_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', edge_data.from_user_id)) \
+                .property('is_disputed', True) \
+                .iterate()
+            logger.warning(
+                f"⚠️ Mutual distrust reports flagged: "
+                f"{edge_data.from_user_id} ↔ {edge_data.to_user_id} (possible dispute)"
+            )
+
+        logger.info(
+            f"✅ Distrust report filed: {edge_data.from_user_id} → {edge_data.to_user_id} "
+            f"(pending moderation review)"
+        )
+        return DisTrustsEdgeResponse(
+            edge_id=edge_id,
+            from_user_id=edge_data.from_user_id,
+            to_user_id=edge_data.to_user_id,
+            distrust_score=edge_data.distrust_score,
+            reason_category=edge_data.reason_category,
+            is_active=False,
+            is_disputed=is_disputed,
+            moderator_reviewed=False,
+            created_at=created_at,
+            expires_at=expires_at,
+        )
+
+    async def activate_distrusts_edge(
+        self, from_user_id: str, to_user_id: str
+    ) -> bool:
+        """Mark a DISTRUSTS edge as active after moderator review."""
+        g = graph_client.get_traversal()
+        try:
+            result = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('DISTRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .toList()
+            )
+            if not result:
+                return False
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .property('is_active',          True) \
+                .property('moderator_reviewed',  True) \
+                .iterate()
+            logger.info(f"✅ Distrust edge activated: {from_user_id} → {to_user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ activate_distrusts_edge failed: {e}")
+            return False
+
+    async def delete_distrusts_edge(
+        self, from_user_id: str, to_user_id: str
+    ) -> bool:
+        """Remove a DISTRUSTS edge (moderator dismissal or expiry)."""
+        g = graph_client.get_traversal()
+        try:
+            existing = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('DISTRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .toList()
+            )
+            if not existing:
+                return False
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .drop() \
+                .iterate()
+            return True
+        except Exception as e:
+            logger.error(f"❌ delete_distrusts_edge failed: {e}")
+            return False
+
+    async def get_distrusts_by_user(self, user_id: str) -> list:
+        """Get all DISTRUSTS edges filed by a user."""
+        g = graph_client.get_traversal()
+        try:
+            raw = (
+                g.V().has('User', 'user_id', user_id)
+                .outE('DISTRUSTS')
+                .valueMap(True)
+                .toList()
+            )
+            return [self._normalize_edge(e) for e in raw]
+        except Exception as e:
+            logger.error(f"❌ get_distrusts_by_user failed: {e}")
+            return []
+
+    async def get_distrusts_for_user(self, user_id: str) -> list:
+        """Get all active DISTRUSTS edges targeting a user (moderator use)."""
+        g = graph_client.get_traversal()
+        try:
+            raw = (
+                g.V().has('User', 'user_id', user_id)
+                .inE('DISTRUSTS').has('is_active', True)
+                .valueMap(True)
+                .toList()
+            )
+            return [self._normalize_edge(e) for e in raw]
+        except Exception as e:
+            logger.error(f"❌ get_distrusts_for_user failed: {e}")
+            return []
+
+    # ═══════════════════════════════════════════════════════════════
+    # VOUCHES EDGE
+    # ═══════════════════════════════════════════════════════════════
+
+    async def create_vouch(self, vouch_data: VouchCreate) -> VouchResponse:
+        """
+        Vouch for another user (creates a VOUCHES edge).
+
+        Guardrails:
+        - No self-vouching
+        - Cannot vouch for someone you have a DISTRUSTS edge against
+        - Velocity limit: MAX_VOUCHES_PER_DAY per 24h
+        - Duplicate prevention (one active vouch per pair direction)
+        """
+        g = graph_client.get_traversal()
+
+        if vouch_data.voucher_id == vouch_data.target_user_id:
+            raise ValueError("Cannot vouch for yourself")
+
+        # ── Can't vouch for someone you're distrusting ───────────────────────
+        has_distrust = bool(
+            g.V().has('User', 'user_id', vouch_data.voucher_id)
+            .outE('DISTRUSTS').has('is_active', True)
+            .where(__.inV().has('User', 'user_id', vouch_data.target_user_id))
+            .toList()
+        )
+        if has_distrust:
+            raise ValueError(
+                "Cannot vouch for a user you have an active distrust report against"
+            )
+
+        # ── Velocity limit ───────────────────────────────────────────────────
+        if self._check_velocity_limit(g, vouch_data.voucher_id, 'VOUCHES', MAX_VOUCHES_PER_DAY):
+            raise ValueError(
+                f"Daily vouch limit ({MAX_VOUCHES_PER_DAY}) reached. Please try again tomorrow."
+            )
+
+        # ── Duplicate prevention ─────────────────────────────────────────────
+        existing = (
+            g.V().has('User', 'user_id', vouch_data.voucher_id)
+            .outE('VOUCHES').has('is_revoked', False)
+            .where(__.inV().has('User', 'user_id', vouch_data.target_user_id))
+            .toList()
+        )
+        if existing:
+            raise ValueError("An active vouch already exists for this pair")
+
+        edge_id    = str(uuid.uuid4())
+        created_at = datetime.utcnow()
+
+        traversal = (
+            g.V().has('User', 'user_id', vouch_data.voucher_id)
+            .addE('VOUCHES')
+            .to(__.V().has('User', 'user_id', vouch_data.target_user_id))
+            .property('edge_id',        edge_id)
+            .property('vouch_strength', vouch_data.vouch_strength)
+            .property('is_revoked',     False)
+            .property('created_at',     int(created_at.timestamp()))
+        )
+        traversal.iterate()
+
+        for tag in vouch_data.domain_tags:
+            g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
+
+        # Refresh the target user's reputation score to reflect the new vouch
+        await trust_scoring_service.update_reputation_score(vouch_data.target_user_id)
+
+        logger.info(
+            f"✅ Vouch created: {vouch_data.voucher_id} → {vouch_data.target_user_id} "
+            f"(strength={vouch_data.vouch_strength})"
+        )
+        return VouchResponse(
+            edge_id=edge_id,
+            voucher_id=vouch_data.voucher_id,
+            target_user_id=vouch_data.target_user_id,
+            vouch_strength=vouch_data.vouch_strength,
+            domain_tags=vouch_data.domain_tags,
+            is_revoked=False,
+            created_at=created_at,
+        )
+
+    async def revoke_vouch(self, voucher_id: str, target_user_id: str) -> bool:
+        """Revoke a previously given vouch."""
+        g = graph_client.get_traversal()
+        try:
+            existing = (
+                g.V().has('User', 'user_id', voucher_id)
+                .outE('VOUCHES').has('is_revoked', False)
+                .where(__.inV().has('User', 'user_id', target_user_id))
+                .toList()
+            )
+            if not existing:
+                return False
+            g.V().has('User', 'user_id', voucher_id) \
+                .outE('VOUCHES').has('is_revoked', False) \
+                .where(__.inV().has('User', 'user_id', target_user_id)) \
+                .property('is_revoked',  True) \
+                .property('revoked_at',  int(datetime.utcnow().timestamp())) \
+                .iterate()
+            await trust_scoring_service.update_reputation_score(target_user_id)
+            logger.info(f"✅ Vouch revoked: {voucher_id} → {target_user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ revoke_vouch failed: {e}")
+            return False
+
+    async def get_vouches_for_user(self, user_id: str) -> list:
+        """Get all active vouches received by a user."""
+        g = graph_client.get_traversal()
+        try:
+            raw = (
+                g.V().has('User', 'user_id', user_id)
+                .inE('VOUCHES').has('is_revoked', False)
+                .valueMap(True)
+                .toList()
+            )
+            return [self._normalize_edge(e) for e in raw]
+        except Exception as e:
+            logger.error(f"❌ get_vouches_for_user failed: {e}")
+            return []
+
+    async def get_vouches_by_user(self, user_id: str) -> list:
+        """Get all vouches given by a user."""
+        g = graph_client.get_traversal()
+        try:
+            raw = (
+                g.V().has('User', 'user_id', user_id)
+                .outE('VOUCHES')
+                .valueMap(True)
+                .toList()
+            )
+            return [self._normalize_edge(e) for e in raw]
+        except Exception as e:
+            logger.error(f"❌ get_vouches_by_user failed: {e}")
+            return []
+

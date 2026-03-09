@@ -39,7 +39,9 @@ class TrustsEdgeCreate(EdgeBase):
     to_user_id: str
     endorsement_count: int = Field(default=0, ge=0)
     domain_tags: List[str] = Field(default_factory=list)
-    
+    # Per-domain trust scores, e.g. {"ai": 0.8, "fintech": 0.6}
+    domain_trust_scores: Optional[dict] = Field(default_factory=dict)
+
     @field_validator('domain_tags')
     def validate_domain_tags(cls, v):
         return [tag.lower().strip() for tag in v]
@@ -58,6 +60,7 @@ class TrustsEdgeResponse(EdgeBase):
     successful_intros: int
     is_mutual: bool = False
     status: str = "pending"
+    suspicion_flag: bool = False
     last_interaction_at: Optional[datetime]
     created_at: datetime
 
@@ -118,4 +121,55 @@ class MemberOfEdgeResponse(BaseModel):
     role: str
     start_date: Optional[datetime]
     active: bool
+    created_at: datetime
+
+# ========================================
+# DISTRUSTS Edge
+# ========================================
+class DisTrustsReasonCategory(str, Enum):
+    FRAUD = "fraud"
+    UNRELIABLE_COLLABORATOR = "unreliable_collaborator"
+    HARASSMENT = "harassment"
+    DISPUTE = "dispute"
+
+class DisTrustsEdgeCreate(BaseModel):
+    from_user_id: str
+    to_user_id: str
+    distrust_score: float = Field(default=0.7, ge=0.0, le=1.0)
+    reason_category: DisTrustsReasonCategory
+    # Evidence notes are stored but only visible to moderators
+    evidence_notes: Optional[str] = Field(default=None, max_length=1000)
+
+class DisTrustsEdgeResponse(BaseModel):
+    edge_id: str
+    from_user_id: str
+    to_user_id: str
+    distrust_score: float
+    reason_category: DisTrustsReasonCategory
+    is_active: bool           # False until moderator review passes
+    is_disputed: bool
+    moderator_reviewed: bool
+    created_at: datetime
+    expires_at: datetime      # created_at + 365 days
+
+# ========================================
+# VOUCHES Edge
+# ========================================
+class VouchCreate(BaseModel):
+    voucher_id: str
+    target_user_id: str
+    vouch_strength: float = Field(default=0.7, ge=0.0, le=1.0)
+    domain_tags: List[str] = Field(default_factory=list)
+
+    @field_validator('domain_tags')
+    def validate_domain_tags(cls, v):
+        return [tag.lower().strip() for tag in v]
+
+class VouchResponse(BaseModel):
+    edge_id: str
+    voucher_id: str
+    target_user_id: str
+    vouch_strength: float
+    domain_tags: List[str]
+    is_revoked: bool
     created_at: datetime

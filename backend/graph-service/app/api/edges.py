@@ -5,7 +5,9 @@ from typing import Optional, List
 from app.schemas.edge_schemas import (
     TrustsEdgeCreate, TrustsEdgeResponse,
     FoundedEdgeCreate, FoundedEdgeResponse,
-    InvestedInEdgeCreate, InvestedInEdgeResponse
+    InvestedInEdgeCreate, InvestedInEdgeResponse,
+    DisTrustsEdgeCreate, DisTrustsEdgeResponse,
+    VouchCreate, VouchResponse,
 )
 from app.services.edge_service import EdgeService
 from app.services.trust_scoring import trust_scoring_service
@@ -258,3 +260,115 @@ async def create_invested_in_edge(edge_data: InvestedInEdgeCreate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+
+# ========================================
+# DISTRUSTS Routes
+# ========================================
+
+@router.post("/distrusts", response_model=DisTrustsEdgeResponse, status_code=status.HTTP_201_CREATED)
+async def create_distrusts_edge(edge_data: DisTrustsEdgeCreate):
+    """
+    File a distrust report against another user.
+
+    **Guardrails applied**:
+    - Must have had a prior accepted connection with this user
+    - Max 3 reports per 30 days
+    - Mutual reports are auto-flagged as disputes
+    - Report is inactive until moderator review
+    """
+    try:
+        return await edge_service.create_distrusts_edge(edge_data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Create DISTRUSTS edge error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@router.put("/distrusts/activate")
+async def activate_distrusts_edge(from_user_id: str, to_user_id: str):
+    """Activate a distrust report after moderator review."""
+    success = await edge_service.activate_distrusts_edge(from_user_id, to_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No DISTRUSTS edge found for this pair"
+        )
+    return {"message": "Distrust edge activated", "from_user_id": from_user_id, "to_user_id": to_user_id}
+
+@router.delete("/distrusts")
+async def delete_distrusts_edge(from_user_id: str, to_user_id: str):
+    """Remove a distrust report (moderator dismissal or self-withdrawal before review)."""
+    success = await edge_service.delete_distrusts_edge(from_user_id, to_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No DISTRUSTS edge found for this pair"
+        )
+    return {"message": "Distrust report removed"}
+
+@router.get("/distrusts/by/{user_id}")
+async def get_distrusts_by_user(user_id: str):
+    """Get all distrust reports filed by a user."""
+    reports = await edge_service.get_distrusts_by_user(user_id)
+    return {"user_id": user_id, "reports_filed": reports, "count": len(reports)}
+
+@router.get("/distrusts/for/{user_id}")
+async def get_distrusts_for_user(user_id: str):
+    """Get all active distrust reports targeting a user (moderator endpoint)."""
+    reports = await edge_service.get_distrusts_for_user(user_id)
+    return {"user_id": user_id, "reports_received": reports, "count": len(reports)}
+
+# ========================================
+# VOUCHES Routes
+# ========================================
+
+@router.post("/vouches", response_model=VouchResponse, status_code=status.HTTP_201_CREATED)
+async def create_vouch(vouch_data: VouchCreate):
+    """
+    Vouch for another user in the network.
+
+    **Guardrails applied**:
+    - Max 5 vouches per day
+    - Cannot vouch for someone you have an active distrust report against
+    - One active vouch per direction per pair
+    """
+    try:
+        return await edge_service.create_vouch(vouch_data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Create VOUCH error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@router.delete("/vouches/revoke")
+async def revoke_vouch(voucher_id: str, target_user_id: str):
+    """Revoke a previously given vouch."""
+    success = await edge_service.revoke_vouch(voucher_id, target_user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active vouch found for this pair"
+        )
+    return {"message": "Vouch revoked", "voucher_id": voucher_id, "target_user_id": target_user_id}
+
+@router.get("/vouches/for/{user_id}")
+async def get_vouches_for_user(user_id: str):
+    """Get all active vouches received by a user."""
+    vouches = await edge_service.get_vouches_for_user(user_id)
+    return {"user_id": user_id, "vouches_received": vouches, "count": len(vouches)}
+
+@router.get("/vouches/by/{user_id}")
+async def get_vouches_by_user(user_id: str):
+    """Get all vouches given by a user."""
+    vouches = await edge_service.get_vouches_by_user(user_id)
+    return {"user_id": user_id, "vouches_given": vouches, "count": len(vouches)}
+
+# ========================================
+# EigenTrust Admin Route
+# ========================================
+
+@router.post("/admin/eigen-trust-refresh")
+async def trigger_eigen_trust_refresh():
+    """Manually trigger EigenTrust rank recomputation across all users."""
+    updated = await trust_scoring_service.compute_eigen_trust_ranks()
+    return {"message": "EigenTrust ranks refreshed", "users_updated": updated}

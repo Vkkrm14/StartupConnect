@@ -61,6 +61,29 @@ mgmt.makePropertyKey('successful_intros').dataType(Integer.class).cardinality(Ca
 mgmt.makePropertyKey('endorsement_count').dataType(Integer.class).cardinality(Cardinality.SINGLE).make()
 mgmt.makePropertyKey('last_interaction_at').dataType(Long.class).cardinality(Cardinality.SINGLE).make()
 
+// TRUSTS edge enhancement properties
+mgmt.makePropertyKey('status').dataType(String.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('suspicion_flag').dataType(Boolean.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('domain_trust_scores').dataType(String.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('interaction_decay_factor').dataType(Double.class).cardinality(Cardinality.SINGLE).make()
+
+// DISTRUSTS edge properties
+mgmt.makePropertyKey('distrust_score').dataType(Double.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('reason_category').dataType(String.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('evidence_notes').dataType(String.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('is_active').dataType(Boolean.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('is_disputed').dataType(Boolean.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('moderator_reviewed').dataType(Boolean.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('expires_at').dataType(Long.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('mutual_distrust_reported').dataType(Boolean.class).cardinality(Cardinality.SINGLE).make()
+
+// VOUCHES edge properties
+mgmt.makePropertyKey('vouch_strength').dataType(Double.class).cardinality(Cardinality.SINGLE).make()
+mgmt.makePropertyKey('is_revoked').dataType(Boolean.class).cardinality(Cardinality.SINGLE).make()
+
+// EigenTrust / reputation ranking
+mgmt.makePropertyKey('eigen_trust_rank').dataType(Double.class).cardinality(Cardinality.SINGLE).make()
+
 // Common properties
 mgmt.makePropertyKey('created_at').dataType(Long.class).cardinality(Cardinality.SINGLE).make()
 mgmt.makePropertyKey('updated_at').dataType(Long.class).cardinality(Cardinality.SINGLE).make()
@@ -81,6 +104,8 @@ mgmt.makeVertexLabel('Organization').make()
 // ========================================
 
 mgmt.makeEdgeLabel('TRUSTS').multiplicity(MULTI).make()
+mgmt.makeEdgeLabel('DISTRUSTS').multiplicity(MULTI).make()
+mgmt.makeEdgeLabel('VOUCHES').multiplicity(MULTI).make()
 mgmt.makeEdgeLabel('FOUNDED').multiplicity(MULTI).make()
 mgmt.makeEdgeLabel('INVESTED_IN').multiplicity(MULTI).make()
 mgmt.makeEdgeLabel('MEMBER_OF').multiplicity(MULTI).make()
@@ -101,6 +126,18 @@ mgmt.buildIndex('userByRole', Vertex.class).addKey(mgmt.getPropertyKey('role_pri
 mgmt.buildIndex('userByGeography', Vertex.class).addKey(mgmt.getPropertyKey('geography')).indexOnly(mgmt.getVertexLabel('User')).buildCompositeIndex()
 mgmt.buildIndex('startupByStage', Vertex.class).addKey(mgmt.getPropertyKey('stage')).indexOnly(mgmt.getVertexLabel('Startup')).buildCompositeIndex()
 
+// TRUSTS edge status index (pending/accepted/rejected lookups)
+mgmt.buildIndex('trustsByStatus', Edge.class).addKey(mgmt.getPropertyKey('status')).indexOnly(mgmt.getEdgeLabel('TRUSTS')).buildCompositeIndex()
+
+// TRUSTS edge suspicion_flag index (path traversal exclusion)
+mgmt.buildIndex('trustsBySuspicionFlag', Edge.class).addKey(mgmt.getPropertyKey('suspicion_flag')).indexOnly(mgmt.getEdgeLabel('TRUSTS')).buildCompositeIndex()
+
+// DISTRUSTS is_active index (moderator and query lookups)
+mgmt.buildIndex('distrustsByIsActive', Edge.class).addKey(mgmt.getPropertyKey('is_active')).indexOnly(mgmt.getEdgeLabel('DISTRUSTS')).buildCompositeIndex()
+
+// VOUCHES is_revoked index (active vouch queries)
+mgmt.buildIndex('vouchesByIsRevoked', Edge.class).addKey(mgmt.getPropertyKey('is_revoked')).indexOnly(mgmt.getEdgeLabel('VOUCHES')).buildCompositeIndex()
+
 // ========================================
 // MIXED INDICES (Full-Text Search)
 // ========================================
@@ -110,6 +147,9 @@ mgmt.buildIndex('userSearchIndex', Vertex.class).addKey(mgmt.getPropertyKey('nam
 
 mgmt.buildIndex('startupSearchIndex', Vertex.class).addKey(mgmt.getPropertyKey('name'), Mapping.TEXT.asParameter()).addKey(mgmt.getPropertyKey('domain'), Mapping.STRING.asParameter()).indexOnly(mgmt.getVertexLabel('Startup')).buildMixedIndex('search')
 
+// User ranking index — enables range/sort queries on reputation and EigenTrust rank
+mgmt.buildIndex('userRankingIndex', Vertex.class).addKey(mgmt.getPropertyKey('reputation_score'), Mapping.DEFAULT.asParameter()).addKey(mgmt.getPropertyKey('eigen_trust_rank'), Mapping.DEFAULT.asParameter()).indexOnly(mgmt.getVertexLabel('User')).buildMixedIndex('search')
+
 // Commit schema
 mgmt.commit()
 
@@ -117,6 +157,11 @@ mgmt.commit()
 ManagementSystem.awaitGraphIndexStatus(graph, 'userByUserId').call()
 ManagementSystem.awaitGraphIndexStatus(graph, 'startupByStartupId').call()
 ManagementSystem.awaitGraphIndexStatus(graph, 'orgByOrgId').call()
+ManagementSystem.awaitGraphIndexStatus(graph, 'trustsByStatus').call()
+ManagementSystem.awaitGraphIndexStatus(graph, 'trustsBySuspicionFlag').call()
+ManagementSystem.awaitGraphIndexStatus(graph, 'distrustsByIsActive').call()
+ManagementSystem.awaitGraphIndexStatus(graph, 'vouchesByIsRevoked').call()
+ManagementSystem.awaitGraphIndexStatus(graph, 'userRankingIndex').call()
 
 println("✅ Schema initialized successfully!")
 """
