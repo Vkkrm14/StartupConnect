@@ -429,11 +429,11 @@ async def complete_intro_request(request: Request, intro_id: str):
 # ========================================
 
 @app.get("/api/v1/search/users")
-async def search_users(q: str, limit: int = 10):
-    """Proxy to search service - search users"""
+async def search_users(request: Request):
+    """Proxy to search service - search users (forwards all query params)"""
     response = await http_client.get(
         f"{settings.SEARCH_SERVICE_URL}/api/v1/search/users",
-        params={"q": q, "limit": limit}
+        params=dict(request.query_params)
     )
     return response.json()
 

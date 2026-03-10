@@ -38,7 +38,7 @@ class UserModel {
       domainTags: List<String>.from(json['domain_tags'] ?? []),
       geography: json['geography'],
       experienceYears: json['experience_years'] ?? 0,
-      reputationScore: (json['reputation_score'] ?? 0.5).toDouble(),
+      reputationScore: (json['reputation_score'] ?? 0.0).toDouble(),
       verificationStatus: json['verification_status'] ?? 'unverified',
       createdAt: DateTime.parse(json['created_at']),
     );

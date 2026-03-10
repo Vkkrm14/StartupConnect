@@ -91,19 +91,45 @@ class VertexService:
         )
     
     async def list_users(self, role: Optional[str] = None, limit: int = 100):
-        """List all User vertices, optionally filtered by role"""
+        """List all User vertices, optionally filtered by role.
+        Returns the live reputation_score from the graph (not a stale cached value).
+        """
         g = graph_client.get_traversal()
 
         def list_vertices():
             t = g.V().hasLabel('User')
             if role:
                 t = t.has('role_primary', role)
-            return t.valueMap(True).toList()
+            # Project vertex properties alongside a live reputation score computed
+            # as the average outgoing TRUSTS trust_score (accepted edges only).
+            # Falls back to the stored reputation_score property when no edges exist.
+            return (
+                t.project('props', 'live_reputation')
+                .by(__.valueMap(True))
+                .by(
+                    __.coalesce(
+                        __.outE('TRUSTS').has('status', 'accepted')
+                          .values('trust_score')
+                          .mean(),
+                        __.values('reputation_score')
+                    )
+                )
+                .toList()
+            )
 
         try:
             loop = asyncio.get_event_loop()
-            vertices = await loop.run_in_executor(executor, list_vertices)
-            return [self._vertex_to_user_response(v) for v in vertices[:limit]]
+            rows = await loop.run_in_executor(executor, list_vertices)
+            results = []
+            for row in rows[:limit]:
+                props = row['props']
+                live_rep = row.get('live_reputation', None)
+                user = self._vertex_to_user_response(props)
+                if live_rep is not None:
+                    # Override with live value so discover page always shows current score
+                    user = user.model_copy(update={'reputation_score': round(float(live_rep), 4)})
+                results.append(user)
+            return results
         except Exception as e:
             logger.error(f"❌ Failed to list users: {str(e)}")
             raise
@@ -244,7 +270,7 @@ class VertexService:
             domain_tags=vertex_data.get('domain_tags', []),
             geography=vertex_data.get('geography', [''])[0],
             experience_years=vertex_data.get('experience_years', [0])[0],
-            reputation_score=float(vertex_data.get('reputation_score', [0.0])[0]),
+            reputation_score=float((vertex_data.get('reputation_score') or [0.0])[0]),
             verification_status=vertex_data.get('verification_status', ['unverified'])[0],
             created_at=datetime.fromtimestamp(vertex_data.get('created_at', [0])[0])
         )

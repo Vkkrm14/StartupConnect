@@ -113,8 +113,29 @@ class _SearchScreenState extends State<SearchScreen>
 
     List<UserModel> results;
     if (result.results.isNotEmpty) {
-      // ES returned results — use them
-      results = result.results;
+      // ES returned results — merge with live reputation scores from _allUsers
+      // (ES index may be stale; _allUsers comes from graph-service with live scores)
+      final liveScores = {for (final u in _allUsers) u.userId: u.reputationScore};
+      results = result.results.map((u) {
+        final liveRep = liveScores[u.userId];
+        if (liveRep != null) {
+          return UserModel(
+            userId: u.userId,
+            name: u.name,
+            email: u.email,
+            bio: u.bio,
+            rolePrimary: u.rolePrimary,
+            rolesSecondary: u.rolesSecondary,
+            domainTags: u.domainTags,
+            geography: u.geography,
+            experienceYears: u.experienceYears,
+            reputationScore: liveRep,
+            verificationStatus: u.verificationStatus,
+            createdAt: u.createdAt,
+          );
+        }
+        return u;
+      }).toList();
     } else {
       // ES empty or unavailable — fall back to client-side filter
       final q = query.toLowerCase();
@@ -419,7 +440,9 @@ class _SearchScreenState extends State<SearchScreen>
                       color: _trustColor(user.reputationScore), size: 20),
                   const SizedBox(height: 2),
                   Text(
-                    user.reputationScore.toStringAsFixed(1),
+                    user.reputationScore > 0
+                        ? user.reputationScore.toStringAsFixed(2)
+                        : '—',
                     style: TextStyle(
                       color: _trustColor(user.reputationScore),
                       fontWeight: FontWeight.bold,
@@ -462,6 +485,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Color _trustColor(double score) {
+    if (score == 0.0) return Colors.grey[400]!;
     if (score >= 0.75) return Colors.green[700]!;
     if (score >= 0.50) return Colors.blue[600]!;
     if (score >= 0.25) return Colors.orange[600]!;
