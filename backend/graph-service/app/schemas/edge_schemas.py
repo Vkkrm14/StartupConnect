@@ -26,10 +26,10 @@ class InvestmentVisibility(str, Enum):
 # ========================================
 class EdgeBase(BaseModel):
     """Common properties for all edges"""
-    trust_score: float = Field(default=0.5, ge=0.0, le=1.0)
     strength_score: float = Field(default=0.5, ge=0.0, le=1.0)
     recency_score: float = Field(default=1.0, ge=0.0, le=1.0)
     interaction_count: int = Field(default=0, ge=0)
+    # trust_score is intentionally excluded — always computed server-side
 
 # ========================================
 # TRUSTS Edge
@@ -53,6 +53,7 @@ class TrustsEdgeResponse(EdgeBase):
     edge_id: str
     from_user_id: str
     to_user_id: str
+    trust_score: float = Field(ge=0.0, le=1.0)  # server-computed; always present in responses
     endorsement_count: int
     domain_tags: List[str]
     successful_intros: int

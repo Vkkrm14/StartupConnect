@@ -4,6 +4,8 @@ from typing import Optional, List
 import uuid
 from datetime import datetime
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from gremlin_python import statics
 from gremlin_python.process.graph_traversal import __
@@ -17,12 +19,16 @@ from app.services.trust_scoring import trust_scoring_service
 
 logger = logging.getLogger(__name__)
 
+# Thread pool for running synchronous Gremlin operations
+_executor = ThreadPoolExecutor(max_workers=10)
+
 # Role-based connection rules — defines which roles can initiate trust edges
 ALLOWED_TRUST_CONNECTIONS = {
     'founder':   ['investor', 'mentor', 'connector', 'founder'],
     'investor':  ['founder', 'connector', 'investor'],
-    'mentor':    ['founder', 'connector'],
-    'connector': ['founder', 'investor', 'mentor', 'connector'],
+    'mentor':    ['founder', 'connector', 'operator'],
+    'connector': ['founder', 'investor', 'mentor', 'connector', 'operator'],
+    'operator':  ['mentor', 'connector', 'founder', 'investor'],
 }
 
 # Cooldown (seconds) between automatic trust score recalculations
@@ -140,9 +146,10 @@ class EdgeService:
             .property('is_mutual', False)
             .property('status', status)
             .property('created_at', now_ts)
-            .property('accepted_at', now_ts if status == 'accepted' else None)
             .iterate()
         )
+        if status == 'accepted':
+            g.E().has('edge_id', edge_id).property('accepted_at', now_ts).iterate()
 
         for tag in domain_tags or []:
             g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
@@ -180,91 +187,79 @@ class EdgeService:
     
     async def create_trusts_edge(self, edge_data: TrustsEdgeCreate) -> TrustsEdgeResponse:
         """Create a TRUSTS edge between two users"""
-        g = graph_client.get_traversal()
-        
-        # ── Self-loop prevention ──
+        # ── Self-loop prevention (no I/O needed) ──
         if edge_data.from_user_id == edge_data.to_user_id:
             raise ValueError("User cannot create a trust edge to themselves")
-        
-        # ── Role-based connection validation ──
-        self._validate_trust_roles(edge_data.from_user_id, edge_data.to_user_id)
-        
-        # ── Duplicate edge prevention ──
-        existing = (
-            g.V().has('User', 'user_id', edge_data.from_user_id)
-            .outE('TRUSTS')
-            .where(__.inV().has('User', 'user_id', edge_data.to_user_id))
-            .toList()
-        )
-        if existing:
-            raise ValueError(
-                f"TRUSTS edge already exists from {edge_data.from_user_id} to {edge_data.to_user_id}"
-            )
-        
+
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
-        
-        try:
-            initial_interaction_count = 0
-            initial_successful_intros = 0
-            initial_recency_score = 1.0
+        calculated_score = trust_scoring_service.compute_score(
+            interaction_count=0,
+            successful_intros=0,
+            last_interaction_at=None,
+        )
 
-            # Calculate score from server-owned counters — never trust raw input
-            calculated_score = trust_scoring_service.compute_score(
-                interaction_count=initial_interaction_count,
-                successful_intros=initial_successful_intros,
-                last_interaction_at=None   # brand-new edge; no recency yet
+        def _sync():
+            self._validate_trust_roles(edge_data.from_user_id, edge_data.to_user_id)
+            g = graph_client.get_traversal()
+            existing = (
+                g.V().has('User', 'user_id', edge_data.from_user_id)
+                .outE('TRUSTS')
+                .where(__.inV().has('User', 'user_id', edge_data.to_user_id))
+                .toList()
             )
-
-            traversal = (
+            if existing:
+                raise ValueError(
+                    f"TRUSTS edge already exists from {edge_data.from_user_id} to {edge_data.to_user_id}"
+                )
+            (
                 g.V().has('User', 'user_id', edge_data.from_user_id)
                 .addE('TRUSTS')
                 .to(__.V().has('User', 'user_id', edge_data.to_user_id))
                 .property('edge_id', edge_id)
                 .property('trust_score', calculated_score)
                 .property('strength_score', edge_data.strength_score)
-                .property('recency_score', initial_recency_score)
-                .property('interaction_count', initial_interaction_count)
+                .property('recency_score', 1.0)
+                .property('interaction_count', 0)
                 .property('endorsement_count', edge_data.endorsement_count)
-                .property('successful_intros', initial_successful_intros)
+                .property('successful_intros', 0)
                 .property('interaction_decay_factor', 1.0)
                 .property('is_mutual', False)
                 .property('status', 'pending')
                 .property('created_at', int(created_at.timestamp()))
+                .iterate()
             )
-            traversal.iterate()
-            
-            # Add domain tags to the edge
-            if edge_data.domain_tags:
-                for tag in edge_data.domain_tags:
-                    g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
-            
-            logger.info(
-                f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id} (pending connection request)"
-            )
-            
-            return TrustsEdgeResponse(
-                edge_id=edge_id,
-                from_user_id=edge_data.from_user_id,
-                to_user_id=edge_data.to_user_id,
-                trust_score=calculated_score,
-                strength_score=edge_data.strength_score,
-                recency_score=initial_recency_score,
-                interaction_count=initial_interaction_count,
-                endorsement_count=edge_data.endorsement_count,
-                domain_tags=edge_data.domain_tags,
-                successful_intros=initial_successful_intros,
-                is_mutual=False,
-                status='pending',
-                last_interaction_at=None,
-                created_at=created_at
-            )
-            
-        except StopIteration:
-            raise ValueError("One or both users not found")
+            for tag in edge_data.domain_tags or []:
+                g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(_executor, _sync)
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to create TRUSTS edge: {str(e)}")
             raise
+
+        logger.info(
+            f"✅ Created TRUSTS edge: {edge_data.from_user_id} → {edge_data.to_user_id} (pending connection request)"
+        )
+        return TrustsEdgeResponse(
+            edge_id=edge_id,
+            from_user_id=edge_data.from_user_id,
+            to_user_id=edge_data.to_user_id,
+            trust_score=calculated_score,
+            strength_score=edge_data.strength_score,
+            recency_score=1.0,
+            interaction_count=0,
+            endorsement_count=edge_data.endorsement_count,
+            domain_tags=edge_data.domain_tags,
+            successful_intros=0,
+            is_mutual=False,
+            status='pending',
+            last_interaction_at=None,
+            created_at=created_at,
+        )
     
     # ── Connection request / approval flow ──
     async def accept_trusts_edge(self, from_user_id: str, to_user_id: str) -> bool:
@@ -273,9 +268,8 @@ class EdgeService:
         'to_user_id'   = the RECEIVER who is accepting (i.e. the current user).
         We query from the receiver's perspective using inE().
         """
-        g = graph_client.get_traversal()
-        try:
-            # Receiver looks at incoming pending edges from sender
+        def _sync_accept():
+            g = graph_client.get_traversal()
             edge = (
                 g.V().has('User', 'user_id', to_user_id)
                 .inE('TRUSTS')
@@ -289,29 +283,29 @@ class EdgeService:
             pending_edge = edge[0]
             reverse_strength = float(self._extract_edge_value(pending_edge, 'strength_score', 0.5) or 0.5)
             reverse_domain_tags = pending_edge.get('domain_tags', []) or []
-            
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('status', 'accepted') \
                 .property('accepted_at', int(datetime.utcnow().timestamp())) \
                 .iterate()
-
             self._ensure_trust_edge(
-                g,
-                to_user_id,
-                from_user_id,
+                g, to_user_id, from_user_id,
                 status='accepted',
                 strength_score=reverse_strength,
                 domain_tags=reverse_domain_tags,
             )
             self._sync_mutual_flags(g, from_user_id, to_user_id)
-
-            await trust_scoring_service.update_reputation_score(from_user_id)
-            await trust_scoring_service.update_reputation_score(to_user_id)
-            
-            logger.info(f"✅ Accepted TRUSTS edge: {from_user_id} → {to_user_id}")
             return True
+
+        loop = asyncio.get_event_loop()
+        try:
+            accepted = await loop.run_in_executor(_executor, _sync_accept)
+            if accepted:
+                await trust_scoring_service.update_reputation_score(from_user_id)
+                await trust_scoring_service.update_reputation_score(to_user_id)
+                logger.info(f"✅ Accepted TRUSTS edge: {from_user_id} → {to_user_id}")
+            return accepted
         except Exception as e:
             logger.error(f"❌ Failed to accept TRUSTS edge: {str(e)}")
             return False
@@ -321,9 +315,8 @@ class EdgeService:
         'from_user_id' = the person who SENT the request.
         'to_user_id'   = the RECEIVER who is rejecting.
         """
-        g = graph_client.get_traversal()
-        try:
-            # Receiver looks at incoming pending edges from sender
+        def _sync_reject():
+            g = graph_client.get_traversal()
             edge = (
                 g.V().has('User', 'user_id', to_user_id)
                 .inE('TRUSTS')
@@ -333,7 +326,6 @@ class EdgeService:
             )
             if not edge:
                 return False
-            
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
@@ -341,14 +333,17 @@ class EdgeService:
                 .property('is_mutual', False) \
                 .property('rejected_at', int(datetime.utcnow().timestamp())) \
                 .iterate()
-
             self._sync_mutual_flags(g, from_user_id, to_user_id)
-
-            await trust_scoring_service.update_reputation_score(from_user_id)
-            await trust_scoring_service.update_reputation_score(to_user_id)
-            
-            logger.info(f"✅ Rejected TRUSTS edge: {from_user_id} → {to_user_id}")
             return True
+
+        loop = asyncio.get_event_loop()
+        try:
+            rejected = await loop.run_in_executor(_executor, _sync_reject)
+            if rejected:
+                await trust_scoring_service.update_reputation_score(from_user_id)
+                await trust_scoring_service.update_reputation_score(to_user_id)
+                logger.info(f"✅ Rejected TRUSTS edge: {from_user_id} → {to_user_id}")
+            return rejected
         except Exception as e:
             logger.error(f"❌ Failed to reject TRUSTS edge: {str(e)}")
             return False
@@ -357,16 +352,19 @@ class EdgeService:
         """Get all pending TRUSTS edges where this user is the receiver.
         Returns normalised dicts (not raw Gremlin valueMap output).
         """
-        g = graph_client.get_traversal()
-        try:
-            raw_pending = (
+        def _sync():
+            g = graph_client.get_traversal()
+            return (
                 g.V().has('User', 'user_id', user_id)
                 .inE('TRUSTS')
                 .has('status', 'pending')
                 .valueMap(True)
                 .toList()
             )
-            return [self._normalize_edge(e) for e in raw_pending]
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(_executor, _sync)
+            return [self._normalize_edge(e) for e in raw]
         except Exception as e:
             logger.error(f"❌ Failed to get pending requests: {str(e)}")
             return []
@@ -375,83 +373,81 @@ class EdgeService:
     async def delete_trusts_edge(self, from_user_id: str, to_user_id: str) -> bool:
         """Delete a mutual connection between two users.
         Removes TRUSTS edges in both directions so the connection disappears for both users."""
-        g = graph_client.get_traversal()
-        try:
+        def _sync_delete():
+            g = graph_client.get_traversal()
             edge_exists = bool(self._get_trust_edges(g, from_user_id, to_user_id))
             reverse_exists = bool(self._get_trust_edges(g, to_user_id, from_user_id))
             if not edge_exists and not reverse_exists:
                 return False
-            
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
-                .drop() \
-                .iterate()
-
+                .drop().iterate()
             g.V().has('User', 'user_id', to_user_id) \
                 .outE('TRUSTS') \
                 .where(__.inV().has('User', 'user_id', from_user_id)) \
-                .drop() \
-                .iterate()
-
-            await trust_scoring_service.update_reputation_score(from_user_id)
-            await trust_scoring_service.update_reputation_score(to_user_id)
-            
-            logger.info(
-                f"🗑️ TRUSTS connection removed: {from_user_id} ↔ {to_user_id} "
-                f"at {datetime.utcnow().isoformat()} (audit)"
-            )
+                .drop().iterate()
             return True
+
+        loop = asyncio.get_event_loop()
+        try:
+            deleted = await loop.run_in_executor(_executor, _sync_delete)
+            if deleted:
+                await trust_scoring_service.update_reputation_score(from_user_id)
+                await trust_scoring_service.update_reputation_score(to_user_id)
+                logger.info(
+                    f"🗑️ TRUSTS connection removed: {from_user_id} ↔ {to_user_id} "
+                    f"at {datetime.utcnow().isoformat()} (audit)"
+                )
+            return deleted
         except Exception as e:
             logger.error(f"❌ Failed to delete TRUSTS edge: {str(e)}")
             return False
     
     async def delete_founded_edge(self, user_id: str, startup_id: str) -> bool:
         """Delete a FOUNDED edge between a user and startup"""
-        g = graph_client.get_traversal()
-        try:
-            edge = (
-                g.V().has('User', 'user_id', user_id)
-                .outE('FOUNDED')
-                .where(__.inV().has('Startup', 'startup_id', startup_id))
-                .toList()
-            )
-            if not edge:
+        def _sync():
+            g = graph_client.get_traversal()
+            if not g.V().has('User', 'user_id', user_id) \
+                    .outE('FOUNDED') \
+                    .where(__.inV().has('Startup', 'startup_id', startup_id)) \
+                    .toList():
                 return False
-            
             g.V().has('User', 'user_id', user_id) \
                 .outE('FOUNDED') \
                 .where(__.inV().has('Startup', 'startup_id', startup_id)) \
-                .drop() \
-                .iterate()
-            
-            logger.info(f"✅ Deleted FOUNDED edge: {user_id} → {startup_id}")
+                .drop().iterate()
             return True
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(_executor, _sync)
+            if result:
+                logger.info(f"✅ Deleted FOUNDED edge: {user_id} → {startup_id}")
+            return result
         except Exception as e:
             logger.error(f"❌ Failed to delete FOUNDED edge: {str(e)}")
             return False
     
     async def delete_invested_in_edge(self, investor_id: str, startup_id: str) -> bool:
         """Delete an INVESTED_IN edge between an investor and startup"""
-        g = graph_client.get_traversal()
-        try:
-            edge = (
-                g.V().has('User', 'user_id', investor_id)
-                .outE('INVESTED_IN')
-                .where(__.inV().has('Startup', 'startup_id', startup_id))
-                .toList()
-            )
-            if not edge:
+        def _sync():
+            g = graph_client.get_traversal()
+            if not g.V().has('User', 'user_id', investor_id) \
+                    .outE('INVESTED_IN') \
+                    .where(__.inV().has('Startup', 'startup_id', startup_id)) \
+                    .toList():
                 return False
-            
             g.V().has('User', 'user_id', investor_id) \
                 .outE('INVESTED_IN') \
                 .where(__.inV().has('Startup', 'startup_id', startup_id)) \
-                .drop() \
-                .iterate()
-            
-            logger.info(f"✅ Deleted INVESTED_IN edge: {investor_id} → {startup_id}")
+                .drop().iterate()
             return True
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(_executor, _sync)
+            if result:
+                logger.info(f"✅ Deleted INVESTED_IN edge: {investor_id} → {startup_id}")
+            return result
         except Exception as e:
             logger.error(f"❌ Failed to delete INVESTED_IN edge: {str(e)}")
             return False
@@ -465,8 +461,6 @@ class EdgeService:
         """Update trust score on an existing edge.
         If new_trust_score is None, recalculates using the scoring formula.
         """
-        g = graph_client.get_traversal()
-        
         try:
             # Auto-recalculate if no score explicitly provided
             if new_trust_score is None:
@@ -477,19 +471,22 @@ class EdgeService:
                     f"🔄 Auto-recalculated trust score: {from_user_id} → {to_user_id} = {new_trust_score}"
                 )
 
-            # Find and update edge
-            g.V().has('User', 'user_id', from_user_id) \
-                .outE('TRUSTS').has('status', 'accepted') \
-                .where(__.inV().has('User', 'user_id', to_user_id)) \
-                .property('trust_score', new_trust_score) \
-                .property('updated_at', int(datetime.utcnow().timestamp())) \
-                .iterate()
-            
-            logger.info(
-                f"✅ Updated trust score: {from_user_id} → {to_user_id} = {new_trust_score}"
-            )
+            score = new_trust_score  # capture for closure
+
+            def _sync_write():
+                g = graph_client.get_traversal()
+                g.V().has('User', 'user_id', from_user_id) \
+                    .outE('TRUSTS').has('status', 'accepted') \
+                    .where(__.inV().has('User', 'user_id', to_user_id)) \
+                    .property('trust_score', score) \
+                    .property('updated_at', int(datetime.utcnow().timestamp())) \
+                    .iterate()
+
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(_executor, _sync_write)
+            logger.info(f"✅ Updated trust score: {from_user_id} → {to_user_id} = {score}")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to update trust score: {str(e)}")
             return False
@@ -500,10 +497,8 @@ class EdgeService:
         to_user_id: str
     ) -> bool:
         """Increment successful intro count on edge"""
-        g = graph_client.get_traversal()
-        
-        try:
-            # Safe fetch — .toList() instead of .next() to avoid StopIteration crash
+        def _sync_inc():
+            g = graph_client.get_traversal()
             edge_list = (
                 g.V().has('User', 'user_id', from_user_id)
                 .outE('TRUSTS').has('status', 'accepted')
@@ -513,26 +508,27 @@ class EdgeService:
             )
             if not edge_list:
                 raise ValueError(f"No TRUSTS edge found from {from_user_id} to {to_user_id}")
-            edge_data = edge_list[0]
-            
-            current_count = edge_data.get('successful_intros', [0])[0]
-            
-            # Update count and last interaction timestamp
+            current_count = edge_list[0].get('successful_intros', [0])[0]
+            now = int(datetime.utcnow().timestamp())
+            new_recency = trust_scoring_service.compute_recency_score(float(now))
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('successful_intros', current_count + 1) \
-                .property('last_interaction_at', int(datetime.utcnow().timestamp())) \
+                .property('last_interaction_at', now) \
+                .property('interaction_decay_factor', 1.0) \
+                .property('recency_score', new_recency) \
                 .iterate()
 
-            # Sync trust score using formula now that counters have changed
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(_executor, _sync_inc)
             await self.update_trust_score(from_user_id, to_user_id)
-
-            logger.info(
-                f"✅ Incremented successful intros: {from_user_id} → {to_user_id}"
-            )
+            await trust_scoring_service.update_reputation_score(from_user_id)
+            logger.info(f"✅ Incremented successful intros: {from_user_id} → {to_user_id}")
             return True
-            
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to increment successful intros: {str(e)}")
             return False
@@ -546,10 +542,8 @@ class EdgeService:
         """Increment interaction count on edge and auto-recalculate trust score.
         Call this whenever a meaningful interaction occurs (e.g., message, meeting).
         Trust score is only recalculated if the last update was > RECALC_COOLDOWN_SECONDS ago."""
-        g = graph_client.get_traversal()
-        
-        try:
-            # Safe fetch — .toList() instead of .next() to avoid StopIteration crash
+        def _sync_inc():
+            g = graph_client.get_traversal()
             edge_list = (
                 g.V().has('User', 'user_id', from_user_id)
                 .outE('TRUSTS').has('status', 'accepted')
@@ -560,33 +554,37 @@ class EdgeService:
             if not edge_list:
                 raise ValueError(f"No TRUSTS edge found from {from_user_id} to {to_user_id}")
             edge_data = edge_list[0]
-            
             current_count = edge_data.get('interaction_count', [0])[0]
             now = int(datetime.utcnow().timestamp())
-            
-            # Update count, reset decay factor, and set last interaction time
+            new_recency = trust_scoring_service.compute_recency_score(float(now))
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('interaction_count', current_count + 1) \
                 .property('interaction_decay_factor', 1.0) \
                 .property('last_interaction_at', now) \
+                .property('recency_score', new_recency) \
                 .iterate()
-            
-            # Recalculate trust score only if cooldown has elapsed
             last_updated = edge_data.get('updated_at', [0])[0]
             if isinstance(last_updated, list):
                 last_updated = last_updated[0] if last_updated else 0
-            if (now - int(last_updated)) > RECALC_COOLDOWN_SECONDS:
+            needs_recalc = (now - int(last_updated)) > RECALC_COOLDOWN_SECONDS
+            return current_count + 1, needs_recalc
+
+        loop = asyncio.get_event_loop()
+        try:
+            new_count, needs_recalc = await loop.run_in_executor(_executor, _sync_inc)
+            if needs_recalc:
                 await self.update_trust_score(from_user_id, to_user_id)
             else:
                 logger.info("⏭️ Skipping trust score recalc — within cooldown window")
-            
+            await trust_scoring_service.update_reputation_score(from_user_id)
             logger.info(
-                f"✅ Incremented interaction count: {from_user_id} → {to_user_id} (new count: {current_count + 1})"
+                f"✅ Incremented interaction count: {from_user_id} → {to_user_id} (new count: {new_count})"
             )
             return True
-            
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to increment interaction count: {str(e)}")
             return False
@@ -605,142 +603,142 @@ class EdgeService:
             status:    Optional filter — 'pending', 'accepted', 'rejected'.
             direction: 'out' (sent), 'in' (received), or 'both'.
         """
-        g = graph_client.get_traversal()
-        try:
+        def _sync():
+            g = graph_client.get_traversal()
             base = g.V().has('User', 'user_id', user_id)
-            
             if direction == 'in':
                 traversal = base.inE('TRUSTS')
             elif direction == 'both':
                 traversal = base.bothE('TRUSTS')
             else:
                 traversal = base.outE('TRUSTS')
-            
             if status:
                 traversal = traversal.has('status', status)
-            
-            raw = traversal.valueMap(True).toList()
+            return traversal.valueMap(True).toList()
+
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(_executor, _sync)
             return [self._normalize_edge(e) for e in raw]
         except Exception as e:
             logger.error(f"❌ Failed to get trust edges for {user_id}: {str(e)}")
             return []
 
     async def has_accepted_trust_edge(self, from_user_id: str, to_user_id: str) -> bool:
-        g = graph_client.get_traversal()
-        try:
+        def _sync():
+            g = graph_client.get_traversal()
             return bool(
                 g.V().has('User', 'user_id', from_user_id)
                 .outE('TRUSTS').has('status', 'accepted')
                 .where(__.inV().has('User', 'user_id', to_user_id))
                 .toList()
             )
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(_executor, _sync)
         except Exception as e:
             logger.error(f"❌ Failed to check accepted TRUSTS edge: {str(e)}")
             return False
 
     async def create_founded_edge(self, edge_data: FoundedEdgeCreate) -> FoundedEdgeResponse:
         """Create a FOUNDED edge (User → Startup)"""
-        g = graph_client.get_traversal()
-        
-        # ── Duplicate edge prevention ──
-        existing = (
-            g.V().has('User', 'user_id', edge_data.user_id)
-            .outE('FOUNDED')
-            .where(__.inV().has('Startup', 'startup_id', edge_data.startup_id))
-            .toList()
-        )
-        if existing:
-            raise ValueError(
-                f"FOUNDED edge already exists: {edge_data.user_id} → {edge_data.startup_id}"
-            )
-        
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
-        
+
+        def _sync():
+            g = graph_client.get_traversal()
+            if g.V().has('User', 'user_id', edge_data.user_id) \
+                    .outE('FOUNDED') \
+                    .where(__.inV().has('Startup', 'startup_id', edge_data.startup_id)) \
+                    .toList():
+                raise ValueError(
+                    f"FOUNDED edge already exists: {edge_data.user_id} → {edge_data.startup_id}"
+                )
+            traversal = (
+                g.V().has('User', 'user_id', edge_data.user_id)
+                .addE('FOUNDED')
+                .to(__.V().has('Startup', 'startup_id', edge_data.startup_id))
+                .property('edge_id', edge_id)
+                .property('role', edge_data.role)
+                .property('active', edge_data.active)
+                .property('created_at', int(created_at.timestamp()))
+            )
+            traversal.iterate()
+            # Set optional start_date only if provided (JanusGraph doesn't support None properties)
+            if edge_data.start_date:
+                g.E().has('edge_id', edge_id).property(
+                    'start_date', int(edge_data.start_date.timestamp())
+                ).iterate()
+
+        loop = asyncio.get_event_loop()
         try:
-            # Create edge directly using has() steps (avoids materializing vertex objects)
-            g.V().has('User', 'user_id', edge_data.user_id) \
-                .addE('FOUNDED') \
-                .to(__.V().has('Startup', 'startup_id', edge_data.startup_id)) \
-                .property('edge_id', edge_id) \
-                .property('role', edge_data.role) \
-                .property('start_date', int(edge_data.start_date.timestamp()) if edge_data.start_date else None) \
-                .property('active', edge_data.active) \
-                .property('created_at', int(created_at.timestamp())) \
-                .iterate()
-            
-            logger.info(
-                f"✅ Created FOUNDED edge: {edge_data.user_id} → {edge_data.startup_id}"
-            )
-            
-            return FoundedEdgeResponse(
-                edge_id=edge_id,
-                user_id=edge_data.user_id,
-                startup_id=edge_data.startup_id,
-                role=edge_data.role,
-                start_date=edge_data.start_date,
-                active=edge_data.active,
-                created_at=created_at
-            )
-            
-        except StopIteration:
-            raise ValueError("User or startup not found")
+            await loop.run_in_executor(_executor, _sync)
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to create FOUNDED edge: {str(e)}")
             raise
 
+        logger.info(f"✅ Created FOUNDED edge: {edge_data.user_id} → {edge_data.startup_id}")
+        return FoundedEdgeResponse(
+            edge_id=edge_id,
+            user_id=edge_data.user_id,
+            startup_id=edge_data.startup_id,
+            role=edge_data.role,
+            start_date=edge_data.start_date,
+            active=edge_data.active,
+            created_at=created_at,
+        )
+
     async def create_invested_in_edge(self, edge_data: InvestedInEdgeCreate) -> InvestedInEdgeResponse:
         """Create an INVESTED_IN edge (Investor → Startup)"""
-        g = graph_client.get_traversal()
-        
-        # ── Duplicate edge prevention ──
-        existing = (
-            g.V().has('User', 'user_id', edge_data.investor_id)
-            .outE('INVESTED_IN')
-            .where(__.inV().has('Startup', 'startup_id', edge_data.startup_id))
-            .toList()
-        )
-        if existing:
-            raise ValueError(
-                f"INVESTED_IN edge already exists: {edge_data.investor_id} → {edge_data.startup_id}"
-            )
-        
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
-        
+
+        def _sync():
+            g = graph_client.get_traversal()
+            if g.V().has('User', 'user_id', edge_data.investor_id) \
+                    .outE('INVESTED_IN') \
+                    .where(__.inV().has('Startup', 'startup_id', edge_data.startup_id)) \
+                    .toList():
+                raise ValueError(
+                    f"INVESTED_IN edge already exists: {edge_data.investor_id} → {edge_data.startup_id}"
+                )
+            traversal = (
+                g.V().has('User', 'user_id', edge_data.investor_id)
+                .addE('INVESTED_IN')
+                .to(__.V().has('Startup', 'startup_id', edge_data.startup_id))
+                .property('edge_id', edge_id)
+                .property('round', edge_data.round)
+                .property('year', edge_data.year)
+                .property('visibility', edge_data.visibility)
+                .property('created_at', int(created_at.timestamp()))
+            )
+            traversal.iterate()
+            # Set optional amount_range only if provided
+            if edge_data.amount_range:
+                g.E().has('edge_id', edge_id).property('amount_range', edge_data.amount_range).iterate()
+
+        loop = asyncio.get_event_loop()
         try:
-            # Create edge directly using has() steps (avoids materializing vertex objects)
-            g.V().has('User', 'user_id', edge_data.investor_id) \
-                .addE('INVESTED_IN') \
-                .to(__.V().has('Startup', 'startup_id', edge_data.startup_id)) \
-                .property('edge_id', edge_id) \
-                .property('round', edge_data.round) \
-                .property('amount_range', edge_data.amount_range) \
-                .property('year', edge_data.year) \
-                .property('visibility', edge_data.visibility) \
-                .property('created_at', int(created_at.timestamp())) \
-                .iterate()
-            
-            logger.info(
-                f"✅ Created INVESTED_IN edge: {edge_data.investor_id} → {edge_data.startup_id}"
-            )
-            
-            return InvestedInEdgeResponse(
-                edge_id=edge_id,
-                investor_id=edge_data.investor_id,
-                startup_id=edge_data.startup_id,
-                round=edge_data.round,
-                amount_range=edge_data.amount_range,
-                year=edge_data.year,
-                visibility=edge_data.visibility,
-                created_at=created_at
-            )
-            
-        except StopIteration:
-            raise ValueError("Investor or startup not found")
+            await loop.run_in_executor(_executor, _sync)
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to create INVESTED_IN edge: {str(e)}")
             raise
+
+        logger.info(f"✅ Created INVESTED_IN edge: {edge_data.investor_id} → {edge_data.startup_id}")
+        return InvestedInEdgeResponse(
+            edge_id=edge_id,
+            investor_id=edge_data.investor_id,
+            startup_id=edge_data.startup_id,
+            round=edge_data.round,
+            amount_range=edge_data.amount_range,
+            year=edge_data.year,
+            visibility=edge_data.visibility,
+            created_at=created_at,
+        )
     
     async def create_member_of_edge(
         self,
@@ -751,50 +749,50 @@ class EdgeService:
         active: bool = True
     ) -> dict:
         """Create a MEMBER_OF edge (User → Organization)"""
-        g = graph_client.get_traversal()
-        
         edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
-        
-        try:
-            # ── HIGH PRIORITY: Duplicate edge prevention ──
-            existing = (
-                g.V().has('User', 'user_id', user_id)
-                .outE('MEMBER_OF')
-                .where(__.inV().has('Organization', 'org_id', org_id))
-                .toList()
-            )
-            if existing:
+
+        def _sync():
+            g = graph_client.get_traversal()
+            if g.V().has('User', 'user_id', user_id) \
+                    .outE('MEMBER_OF') \
+                    .where(__.inV().has('Organization', 'org_id', org_id)) \
+                    .toList():
                 raise ValueError(f"MEMBER_OF edge already exists: {user_id} → {org_id}")
-            
-            # ── MEDIUM PRIORITY: Fixed — use has() steps instead of .next() ──
-            g.V().has('User', 'user_id', user_id) \
-                .addE('MEMBER_OF') \
-                .to(__.V().has('Organization', 'org_id', org_id)) \
-                .property('edge_id', edge_id) \
-                .property('role', role) \
-                .property('start_date', int(start_date.timestamp()) if start_date else None) \
-                .property('active', active) \
-                .property('created_at', int(created_at.timestamp())) \
-                .iterate()
-            
-            logger.info(f"✅ Created MEMBER_OF edge: {user_id} → {org_id}")
-            
-            return {
-                "edge_id": edge_id,
-                "user_id": user_id,
-                "org_id": org_id,
-                "role": role,
-                "start_date": start_date,
-                "active": active,
-                "created_at": created_at
-            }
-            
-        except StopIteration:
-            raise ValueError("User or organization not found")
+            traversal = (
+                g.V().has('User', 'user_id', user_id)
+                .addE('MEMBER_OF')
+                .to(__.V().has('Organization', 'org_id', org_id))
+                .property('edge_id', edge_id)
+                .property('role', role)
+                .property('active', active)
+                .property('created_at', int(created_at.timestamp()))
+            )
+            traversal.iterate()
+            if start_date:
+                g.E().has('edge_id', edge_id).property(
+                    'start_date', int(start_date.timestamp())
+                ).iterate()
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(_executor, _sync)
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to create MEMBER_OF edge: {str(e)}")
             raise
+
+        logger.info(f"✅ Created MEMBER_OF edge: {user_id} → {org_id}")
+        return {
+            "edge_id": edge_id,
+            "user_id": user_id,
+            "org_id": org_id,
+            "role": role,
+            "start_date": start_date,
+            "active": active,
+            "created_at": created_at,
+        }
     
     async def create_worked_with_edge(
         self,
@@ -805,66 +803,73 @@ class EdgeService:
         end_date: Optional[datetime] = None
     ) -> dict:
         """Create a WORKED_WITH edge (User ↔ User, bidirectional)"""
-        g = graph_client.get_traversal()
-        
-        # ── HIGH PRIORITY: Self-loop prevention ──
         if user_id_1 == user_id_2:
             raise ValueError("User cannot create a WORKED_WITH edge with themselves")
-        
-        # ── HIGH PRIORITY: Duplicate edge prevention (check both directions) ──
-        existing = (
-            g.V().has('User', 'user_id', user_id_1)
-            .bothE('WORKED_WITH')
-            .where(__.bothV().has('User', 'user_id', user_id_2))
-            .toList()
-        )
-        if existing:
-            raise ValueError(
-                f"WORKED_WITH relationship already exists between {user_id_1} and {user_id_2}"
-            )
-        
+
         edge_id = str(uuid.uuid4())
+        reverse_edge_id = str(uuid.uuid4())
         created_at = datetime.utcnow()
-        
-        try:
-            # ── MEDIUM PRIORITY: Fixed — use has() steps instead of .next() ──
+
+        def _sync():
+            g = graph_client.get_traversal()
+            if g.V().has('User', 'user_id', user_id_1) \
+                    .bothE('WORKED_WITH') \
+                    .where(__.bothV().has('User', 'user_id', user_id_2)) \
+                    .toList():
+                raise ValueError(
+                    f"WORKED_WITH relationship already exists between {user_id_1} and {user_id_2}"
+                )
+            now_ts = int(created_at.timestamp())
             # Forward edge
-            g.V().has('User', 'user_id', user_id_1) \
-                .addE('WORKED_WITH') \
-                .to(__.V().has('User', 'user_id', user_id_2)) \
-                .property('edge_id', edge_id) \
-                .property('context', context) \
-                .property('start_date', int(start_date.timestamp()) if start_date else None) \
-                .property('end_date', int(end_date.timestamp()) if end_date else None) \
-                .property('created_at', int(created_at.timestamp())) \
-                .iterate()
-            
+            traversal = (
+                g.V().has('User', 'user_id', user_id_1)
+                .addE('WORKED_WITH')
+                .to(__.V().has('User', 'user_id', user_id_2))
+                .property('edge_id', edge_id)
+                .property('context', context)
+                .property('created_at', now_ts)
+            )
+            traversal.iterate()
             # Reverse edge (bidirectional)
-            reverse_edge_id = str(uuid.uuid4())
-            g.V().has('User', 'user_id', user_id_2) \
-                .addE('WORKED_WITH') \
-                .to(__.V().has('User', 'user_id', user_id_1)) \
-                .property('edge_id', reverse_edge_id) \
-                .property('context', context) \
-                .property('start_date', int(start_date.timestamp()) if start_date else None) \
-                .property('end_date', int(end_date.timestamp()) if end_date else None) \
-                .property('created_at', int(created_at.timestamp())) \
+            (
+                g.V().has('User', 'user_id', user_id_2)
+                .addE('WORKED_WITH')
+                .to(__.V().has('User', 'user_id', user_id_1))
+                .property('edge_id', reverse_edge_id)
+                .property('context', context)
+                .property('created_at', now_ts)
                 .iterate()
-            
-            logger.info(f"✅ Created WORKED_WITH edges: {user_id_1} ↔ {user_id_2}")
-            
-            return {
-                "edge_id": edge_id,
-                "user_id_1": user_id_1,
-                "user_id_2": user_id_2,
-                "context": context,
-                "start_date": start_date,
-                "end_date": end_date,
-                "created_at": created_at
-            }
-            
-        except StopIteration:
-            raise ValueError("One or both users not found")
+            )
+            # Set optional date properties only when provided
+            for eid, ts in (
+                (edge_id, start_date),
+                (reverse_edge_id, start_date),
+            ):
+                if ts:
+                    g.E().has('edge_id', eid).property('start_date', int(ts.timestamp())).iterate()
+            for eid, ts in (
+                (edge_id, end_date),
+                (reverse_edge_id, end_date),
+            ):
+                if ts:
+                    g.E().has('edge_id', eid).property('end_date', int(ts.timestamp())).iterate()
+
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(_executor, _sync)
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to create WORKED_WITH edge: {str(e)}")
             raise
+
+        logger.info(f"✅ Created WORKED_WITH edges: {user_id_1} ↔ {user_id_2}")
+        return {
+            "edge_id": edge_id,
+            "user_id_1": user_id_1,
+            "user_id_2": user_id_2,
+            "context": context,
+            "start_date": start_date,
+            "end_date": end_date,
+            "created_at": created_at,
+        }

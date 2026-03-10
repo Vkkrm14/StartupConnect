@@ -8,6 +8,7 @@ class UserRole(str, Enum):
     INVESTOR = "investor"
     OPERATOR = "operator"
     CONNECTOR = "connector"
+    MENTOR = "mentor"
 
 class VerificationStatus(str, Enum):
     UNVERIFIED = "unverified"

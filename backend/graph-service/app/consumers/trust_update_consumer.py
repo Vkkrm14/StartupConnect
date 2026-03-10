@@ -24,7 +24,6 @@ async def handle_intro_completed(data: dict):
         # Boost trust scores along the path
         await trust_scoring_service.boost_trust_for_successful_intro(
             path_user_ids=path_user_ids,
-            boost_amount=0.05
         )
         
         logger.info(f"✅ Boosted trust scores for intro {intro_id}")

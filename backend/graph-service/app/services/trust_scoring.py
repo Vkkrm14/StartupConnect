@@ -509,7 +509,6 @@ class TrustScoringService:
     async def boost_trust_for_successful_intro(
         self,
         path_user_ids: List[str],
-        boost_amount: float = 0.05
     ):
         """
         Boost trust scores along a path after successful intro

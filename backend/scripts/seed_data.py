@@ -71,7 +71,7 @@ def compute_score(
 def compute_recency_score(last_interaction_at: float | None) -> float:
     """Mirror trust_scoring.py recency behaviour for seeded edges."""
     if not last_interaction_at:
-        return 0.0
+        return 1.0
 
     days_since = (datetime.now(timezone.utc).timestamp() - last_interaction_at) / 86400
     return round(max(0.0, 1.0 - (days_since / 90.0)), 4)
