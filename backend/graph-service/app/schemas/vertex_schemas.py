@@ -6,7 +6,7 @@ from enum import Enum
 class UserRole(str, Enum):
     FOUNDER = "founder"
     INVESTOR = "investor"
-    OPERATOR = "operator"
+    MENTOR = "mentor"
     CONNECTOR = "connector"
 
 class VerificationStatus(str, Enum):

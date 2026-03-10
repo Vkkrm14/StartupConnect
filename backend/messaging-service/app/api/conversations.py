@@ -1,6 +1,7 @@
 import logging
 from typing import List
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 from shared.auth.dependencies import get_current_user, CurrentUser
@@ -34,6 +35,24 @@ async def create_conversation(
     )
     if is_blocked:
         raise HTTPException(status_code=403, detail="Cannot create conversation with this user")
+
+    # Verify the two users have an accepted mutual trust connection
+    try:
+        from app.core.config import settings as _settings
+        async with httpx.AsyncClient(timeout=5.0) as _client:
+            _resp = await _client.get(
+                f"{_settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/connected"
+                f"/{current_user.user_id}/{request.participant_id}"
+            )
+            if _resp.status_code == 200 and not _resp.json().get("is_connected", False):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You must be connected with this user to start a conversation",
+                )
+    except HTTPException:
+        raise
+    except Exception as _e:
+        logger.warning(f"Could not verify connection status before conversation creation: {_e}")
 
     conv = await conversation_service.get_or_create_conversation(
         current_user.user_id, request.participant_id

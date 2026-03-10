@@ -137,7 +137,7 @@ class EdgeService:
             last_interaction_at=None,
         )
 
-        (
+        traversal = (
             g.V().has('User', 'user_id', from_user_id)
             .addE('TRUSTS')
             .to(__.V().has('User', 'user_id', to_user_id))
@@ -152,9 +152,10 @@ class EdgeService:
             .property('is_mutual', False)
             .property('status', status)
             .property('created_at', now_ts)
-            .property('accepted_at', now_ts if status == 'accepted' else None)
-            .iterate()
         )
+        if status == 'accepted':
+            traversal = traversal.property('accepted_at', now_ts)
+        traversal.iterate()
 
         for tag in domain_tags or []:
             g.E().has('edge_id', edge_id).property('domain_tags', tag).iterate()
