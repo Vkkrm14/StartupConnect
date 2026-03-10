@@ -183,6 +183,70 @@ async def get_pending_trust_edges(user_id: str):
     )
     return response.json()
 
+@app.get("/api/v1/edges/trusts/user/{user_id}")
+async def get_user_trust_edges(user_id: str, edge_status: str = None, direction: str = "out"):
+    """Proxy to graph service - get user trust edges"""
+    params = {"direction": direction}
+    if edge_status:
+        params["edge_status"] = edge_status
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/user/{user_id}",
+        params=params
+    )
+    return response.json()
+
+@app.delete("/api/v1/edges/trusts")
+async def delete_trust_edge(from_user_id: str, to_user_id: str):
+    """Proxy to graph service - delete trust edge"""
+    response = await http_client.delete(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts",
+        params={"from_user_id": from_user_id, "to_user_id": to_user_id}
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/trusts/score/{from_user_id}/{to_user_id}")
+async def get_trust_score(from_user_id: str, to_user_id: str):
+    """Proxy to graph service - get trust score between users"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/score/{from_user_id}/{to_user_id}"
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/trusts/connected/{from_user_id}/{to_user_id}")
+async def get_connection_status(from_user_id: str, to_user_id: str):
+    """Proxy to graph service - check connection status"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/connected/{from_user_id}/{to_user_id}"
+    )
+    return response.json()
+
+@app.post("/api/v1/edges/trusts/increment-interaction")
+async def increment_interaction(from_user_id: str, to_user_id: str):
+    """Proxy to graph service - increment interaction count"""
+    response = await http_client.post(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/increment-interaction",
+        params={"from_user_id": from_user_id, "to_user_id": to_user_id}
+    )
+    return response.json()
+
+@app.get("/api/v1/edges/trusts/reputation/{user_id}")
+async def get_reputation_score(user_id: str):
+    """Proxy to graph service - get reputation score"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/edges/trusts/reputation/{user_id}"
+    )
+    return response.json()
+
+@app.patch("/api/v1/users/{user_id}")
+async def update_user(request: Request, user_id: str):
+    """Proxy to graph service - update user"""
+    body = await request.json()
+    response = await http_client.patch(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users/{user_id}",
+        json=body
+    )
+    return response.json()
+
 # ---- DISTRUSTS ----
 
 @app.post("/api/v1/edges/distrusts")

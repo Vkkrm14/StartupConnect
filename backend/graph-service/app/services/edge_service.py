@@ -560,17 +560,22 @@ class EdgeService:
             edge_data = edge_list[0]
             
             current_count = edge_data.get('successful_intros', [0])[0]
+            now = int(datetime.utcnow().timestamp())
+            new_recency = trust_scoring_service.compute_recency_score(float(now))
             
-            # Update count and last interaction timestamp
+            # Update count, reset decay, update recency, and set last interaction timestamp
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('successful_intros', current_count + 1) \
-                .property('last_interaction_at', int(datetime.utcnow().timestamp())) \
+                .property('last_interaction_at', now) \
+                .property('interaction_decay_factor', 1.0) \
+                .property('recency_score', new_recency) \
                 .iterate()
 
             # Sync trust score using formula now that counters have changed
             await self.update_trust_score(from_user_id, to_user_id)
+            await trust_scoring_service.update_reputation_score(from_user_id)
 
             logger.info(
                 f"✅ Incremented successful intros: {from_user_id} → {to_user_id}"
@@ -608,13 +613,15 @@ class EdgeService:
             current_count = edge_data.get('interaction_count', [0])[0]
             now = int(datetime.utcnow().timestamp())
             
-            # Update count, reset decay factor, and set last interaction time
+            # Update count, reset decay factor, recency, and set last interaction time
+            new_recency = trust_scoring_service.compute_recency_score(float(now))
             g.V().has('User', 'user_id', from_user_id) \
                 .outE('TRUSTS').has('status', 'accepted') \
                 .where(__.inV().has('User', 'user_id', to_user_id)) \
                 .property('interaction_count', current_count + 1) \
                 .property('interaction_decay_factor', 1.0) \
                 .property('last_interaction_at', now) \
+                .property('recency_score', new_recency) \
                 .iterate()
             
             # Recalculate trust score only if cooldown has elapsed
@@ -625,6 +632,7 @@ class EdgeService:
                 await self.update_trust_score(from_user_id, to_user_id)
             else:
                 logger.info("⏭️ Skipping trust score recalc — within cooldown window")
+            await trust_scoring_service.update_reputation_score(from_user_id)
             
             logger.info(
                 f"✅ Incremented interaction count: {from_user_id} → {to_user_id} (new count: {current_count + 1})"
