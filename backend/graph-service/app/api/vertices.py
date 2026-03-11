@@ -82,6 +82,19 @@ async def get_user_connections(user_id: str):
             detail=str(e)
         )
 
+@router.get("/users/{user_id}/startups/founded")
+async def get_user_founded_startups(user_id: str):
+    """Get all startups where this user has an active FOUNDED edge.
+    Used by post-service for authorization."""
+    try:
+        return await vertex_service.get_founded_startups(user_id)
+    except Exception as e:
+        logger.error(f"Get founded startups error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
 @router.post("/startups", response_model=StartupResponse, status_code=status.HTTP_201_CREATED)
 async def create_startup(startup_data: StartupCreate):
     """Create a new Startup vertex"""

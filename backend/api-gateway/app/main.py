@@ -84,6 +84,12 @@ async def health_check():
     except:
         services_status["messaging-service"] = False
     
+    try:
+        post_response = await http_client.get(f"{settings.POST_SERVICE_URL}/health")
+        services_status["post-service"] = post_response.status_code == 200
+    except:
+        services_status["post-service"] = False
+    
     all_healthy = all(services_status.values())
     
     return {
@@ -554,3 +560,94 @@ async def proxy_download_image(request: Request, conversation_id: str, file_id: 
         media_type=response.headers.get("content-type", "application/octet-stream"),
         headers={"Content-Disposition": response.headers.get("content-disposition", "")}
     )
+
+
+# ========================================
+# Post Service Proxy Routes
+# ========================================
+
+@app.get("/api/v1/posts/feed")
+async def proxy_post_feed(request: Request):
+    """Proxy to post service - get post feed"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/feed",
+        params=dict(request.query_params), headers=headers
+    )
+    return response.json()
+
+@app.get("/api/v1/posts/{post_id}")
+async def proxy_get_post(request: Request, post_id: str):
+    """Proxy to post service - get single post"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}",
+        headers=headers
+    )
+    return response.json()
+
+@app.post("/api/v1/posts/")
+async def proxy_create_post(request: Request):
+    """Proxy to post service - create post (founder only)"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.put("/api/v1/posts/{post_id}")
+async def proxy_update_post(request: Request, post_id: str):
+    """Proxy to post service - update post (author only)"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.put(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}",
+        json=body, headers=headers
+    )
+    return response.json()
+
+@app.delete("/api/v1/posts/{post_id}")
+async def proxy_delete_post(request: Request, post_id: str):
+    """Proxy to post service - delete post (author only)"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.delete(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}",
+        headers=headers
+    )
+    if response.status_code == 204:
+        return {"detail": "deleted"}
+    return response.json()
+
+@app.post("/api/v1/posts/{post_id}/like")
+async def proxy_like_post(request: Request, post_id: str):
+    """Proxy to post service - like a post"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}/like",
+        headers=headers
+    )
+    if response.status_code == 204:
+        return {"detail": "liked"}
+    return response.json()
+
+@app.delete("/api/v1/posts/{post_id}/like")
+async def proxy_unlike_post(request: Request, post_id: str):
+    """Proxy to post service - unlike a post"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.delete(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}/like",
+        headers=headers
+    )
+    if response.status_code == 204:
+        return {"detail": "unliked"}
+    return response.json()
+
+@app.get("/api/v1/users/{user_id}/startups/founded")
+async def proxy_get_founded_startups(user_id: str):
+    """Proxy to graph service - get startups founded by user"""
+    response = await http_client.get(
+        f"{settings.GRAPH_SERVICE_URL}/api/v1/vertices/users/{user_id}/startups/founded"
+    )
+    return response.json()

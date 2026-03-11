@@ -16,6 +16,9 @@ import '../../features/intros/screens/my_requests_screen.dart';
 import '../../features/messaging/presentation/screens/conversations_screen.dart';
 import '../../features/messaging/presentation/screens/chat_screen.dart';
 import '../../features/messaging/data/models/conversation_model.dart';
+import '../../features/posts/screens/posts_feed_screen.dart';
+import '../../features/posts/screens/create_post_screen.dart';
+import '../../features/posts/screens/post_detail_screen.dart';
 
 class AppRouter {
   final ApiClient apiClient;
@@ -65,6 +68,26 @@ class AppRouter {
         path: '/search',
         name: 'search',
         builder: (context, state) => const SearchScreen(),
+      ),
+
+      // Posts Routes
+      GoRoute(
+        path: '/posts',
+        name: 'posts',
+        builder: (context, state) => const PostsFeedScreen(),
+      ),
+      GoRoute(
+        path: '/posts/create',
+        name: 'create-post',
+        builder: (context, state) => const CreatePostScreen(),
+      ),
+      GoRoute(
+        path: '/posts/:postId',
+        name: 'post-detail',
+        builder: (context, state) {
+          final postId = state.pathParameters['postId']!;
+          return PostDetailScreen(postId: postId);
+        },
       ),
 
       // Profile Routes

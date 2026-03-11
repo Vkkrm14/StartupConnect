@@ -63,6 +63,10 @@ class ApiConfig {
   static const String conversationsEndpoint = '$apiVersion/conversations';
   static const String imagesEndpoint = '$apiVersion/images';
   
+  // Posts endpoints
+  static const String postsFeedEndpoint = '$apiVersion/posts/feed';
+  static const String postsEndpoint = '$apiVersion/posts';
+  
   // Timeout
   static const Duration timeout = Duration(seconds: 30);
 }

@@ -166,6 +166,7 @@ services:
       WORKFLOW_SERVICE_URL: http://workflow-service:8002
       SEARCH_SERVICE_URL: http://search-service:8003
       MESSAGING_SERVICE_URL: http://messaging-service:8004
+      POST_SERVICE_URL: http://post-service:8005
       REDIS_URL: redis://redis:6379
       MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
       JWT_SECRET_KEY: pr0d.ct1on-s3rcret-k3y2016
@@ -295,3 +296,28 @@ services:
         - ./backend/shared:/app/shared
         - message_images:/app/uploads
       command: uvicorn app.main:app --host 0.0.0.0 --port 8004 --reload
+
+  post-service:
+    build: ./backend/post-service
+    container_name: trustgraph-post-service
+    restart: unless-stopped
+    ports:
+      - "8005:8005"
+    environment:
+      ENV: development
+      MONGODB_URL: mongodb://trustgraph:trustgraph_secure_2024@mongodb:27017/trustgraph_db?authSource=admin
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET_KEY: pr0d.ct1on-s3rcret-k3y2016
+      GRAPH_SERVICE_URL: http://graph-service:8001
+      LOG_LEVEL: INFO
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - trustgraph-network
+    volumes:
+      - ./backend/post-service:/app
+      - ./backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8005 --reload

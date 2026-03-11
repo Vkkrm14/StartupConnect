@@ -258,6 +258,35 @@ class VertexService:
             logger.error(f"❌ Failed to get connections for {user_id}: {str(e)}")
             raise
 
+    async def get_founded_startups(self, user_id: str) -> List[dict]:
+        """Get all startups that this user has an active FOUNDED edge to."""
+        g = graph_client.get_traversal()
+
+        def fetch():
+            return (
+                g.V().has('User', 'user_id', user_id)
+                .outE('FOUNDED').has('active', True)
+                .inV().hasLabel('Startup')
+                .valueMap(True)
+                .toList()
+            )
+
+        try:
+            loop = asyncio.get_event_loop()
+            vertices = await loop.run_in_executor(executor, fetch)
+            results = []
+            for v in vertices:
+                results.append({
+                    "startup_id": v.get('startup_id', [''])[0],
+                    "name": v.get('name', [''])[0],
+                    "stage": v.get('stage', [''])[0],
+                    "domain": v.get('domain', [''])[0],
+                })
+            return results
+        except Exception as e:
+            logger.error(f"❌ Failed to get founded startups for {user_id}: {str(e)}")
+            raise
+
     def _vertex_to_user_response(self, vertex_data: dict) -> UserResponse:
         """Convert vertex data to UserResponse"""
         return UserResponse(
