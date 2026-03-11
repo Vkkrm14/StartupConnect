@@ -128,7 +128,7 @@ class PostRepository {
 
   Future<List<Map<String, dynamic>>> getFoundedStartups() async {
     try {
-      final userId = await _apiClient.getUserId();
+      final userId = await _apiClient.getCurrentUserId();
       if (userId == null) return [];
       final response =
           await _apiClient.get('/api/v1/users/$userId/startups/founded');

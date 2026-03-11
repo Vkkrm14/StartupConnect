@@ -19,12 +19,35 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   String? _selectedStartupId;
   List<String> _tags = [];
   bool _isSubmitting = false;
+  bool _isLoadingStartups = true;
+  List<Map<String, dynamic>> _startups = [];
 
   @override
   void dispose() {
     _titleController.dispose();
     _bodyController.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStartups();
+  }
+
+  Future<void> _loadStartups() async {
+    setState(() {
+      _isLoadingStartups = true;
+    });
+    try {
+      final repos = context.read<PostProvider>().repository;
+      final list = await repos.getFoundedStartups();
+      if (mounted) setState(() => _startups = list);
+    } catch (e) {
+      // ignore - leave empty list
+    } finally {
+      if (mounted) setState(() => _isLoadingStartups = false);
+    }
   }
 
   Future<void> _submit() async {
@@ -87,6 +110,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               StartupSelectorDropdown(
+                startups: _startups,
+                isLoading: _isLoadingStartups,
                 selectedStartupId: _selectedStartupId,
                 onChanged: (id) => setState(() => _selectedStartupId = id),
               ),
@@ -120,7 +145,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
               const SizedBox(height: 16),
               TagInputField(
                 tags: _tags,
-                onTagsChanged: (tags) => setState(() => _tags = tags),
+                onChanged: (tags) => setState(() => _tags = tags),
               ),
             ],
           ),
