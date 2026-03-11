@@ -55,7 +55,6 @@ class _ConversationsScreenState extends State<ConversationsScreen>
       backgroundColor: isDark ? const Color(0xFF111827) : Colors.white,
       appBar: _buildAppBar(isDark),
       body: _buildBody(isDark),
-      bottomNavigationBar: _buildBottomNav(context),
     );
   }
 

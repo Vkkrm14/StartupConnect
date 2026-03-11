@@ -74,6 +74,58 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
+      drawer: Drawer(
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              UserAccountsDrawerHeader(
+                accountName: Text(_currentUser?.name.split(' ').first ?? 'User'),
+                accountEmail: Text(_currentUser?.email ?? ''),
+                currentAccountPicture: CircleAvatar(
+                  child: Text(
+                    _currentUser != null && _currentUser!.name.isNotEmpty
+                        ? _currentUser!.name[0].toUpperCase()
+                        : 'U',
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.chat_bubble_outline),
+                title: const Text('Messages'),
+                onTap: () {
+                  Navigator.pop(context);
+                  context.push('/messages');
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.handshake_outlined),
+                title: const Text('Intros'),
+                onTap: () {
+                  Navigator.pop(context);
+                  context.push('/intros/pending');
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.person_outline),
+                title: const Text('Profile'),
+                onTap: () {
+                  Navigator.pop(context);
+                  context.push('/profile');
+                },
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.settings_outlined),
+                title: const Text('Settings'),
+                onTap: () {
+                  Navigator.pop(context);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
       body: RefreshIndicator(
         onRefresh: _loadData,
         child: _isLoading
@@ -98,15 +150,6 @@ class _HomeScreenState extends State<HomeScreen> {
             case 3:
               context.go('/connections');
               break;
-            case 4:
-              context.go('/messages');
-              break;
-            case 5:
-              context.go('/intros/pending');
-              break;
-            case 6:
-              context.go('/profile');
-              break;
           }
         },
         destinations: const [
@@ -129,21 +172,6 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
             label: 'Connections',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Messages',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.handshake_outlined),
-            selectedIcon: Icon(Icons.handshake),
-            label: 'Intros',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profile',
           ),
         ],
       ),

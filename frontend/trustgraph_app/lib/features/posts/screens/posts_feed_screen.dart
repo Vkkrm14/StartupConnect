@@ -89,15 +89,6 @@ class _PostsFeedScreenState extends State<PostsFeedScreen> {
             case 3:
               context.go('/connections');
               break;
-            case 4:
-              context.go('/messages');
-              break;
-            case 5:
-              context.go('/intros/pending');
-              break;
-            case 6:
-              context.go('/profile');
-              break;
           }
         },
         destinations: const [
@@ -120,21 +111,6 @@ class _PostsFeedScreenState extends State<PostsFeedScreen> {
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
             label: 'Connections',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Messages',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.handshake_outlined),
-            selectedIcon: Icon(Icons.handshake),
-            label: 'Intros',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profile',
           ),
         ],
       ),

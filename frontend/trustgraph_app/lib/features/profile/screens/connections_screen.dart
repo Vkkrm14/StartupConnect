@@ -257,7 +257,7 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
         ),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: 2,
+        selectedIndex: 3,
         onDestinationSelected: (index) {
           switch (index) {
             case 0:
@@ -267,16 +267,10 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
               context.go('/search');
               break;
             case 2:
-              break; // already here
+              context.go('/posts');
+              break;
             case 3:
-              context.go('/messages');
-              break;
-            case 4:
-              context.go('/intros/pending');
-              break;
-            case 5:
-              context.go('/profile');
-              break;
+              break; // already here
           }
         },
         destinations: const [
@@ -291,24 +285,14 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
             label: 'Search',
           ),
           NavigationDestination(
+            icon: Icon(Icons.article_outlined),
+            selectedIcon: Icon(Icons.article),
+            label: 'Posts',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
             label: 'Connections',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Messages',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.handshake_outlined),
-            selectedIcon: Icon(Icons.handshake),
-            label: 'Intros',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profile',
           ),
         ],
       ),
