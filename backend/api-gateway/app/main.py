@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -688,6 +688,43 @@ async def proxy_unlike_post(request: Request, post_id: str):
     if response.status_code == 204:
         return {"detail": "unliked"}
     return response.json()
+
+
+@app.get("/api/v1/posts/{post_id}/comments")
+async def proxy_get_post_comments(request: Request, post_id: str):
+    """Proxy to post service - get post comments"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.get(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}/comments",
+        headers=headers,
+    )
+    return JSONResponse(status_code=response.status_code, content=response.json())
+
+
+@app.post("/api/v1/posts/{post_id}/comments")
+async def proxy_create_post_comment(request: Request, post_id: str):
+    """Proxy to post service - create comment"""
+    body = await request.json()
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.post(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}/comments",
+        json=body,
+        headers=headers,
+    )
+    return JSONResponse(status_code=response.status_code, content=response.json())
+
+
+@app.delete("/api/v1/posts/{post_id}/comments/{comment_id}")
+async def proxy_delete_post_comment(request: Request, post_id: str, comment_id: str):
+    """Proxy to post service - delete comment"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    response = await http_client.delete(
+        f"{settings.POST_SERVICE_URL}/api/v1/posts/{post_id}/comments/{comment_id}",
+        headers=headers,
+    )
+    if response.status_code == 204:
+        return Response(status_code=204)
+    return JSONResponse(status_code=response.status_code, content=response.json())
 
 @app.get("/api/v1/users/{user_id}/startups/founded")
 async def proxy_get_founded_startups(user_id: str):

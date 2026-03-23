@@ -70,3 +70,17 @@ class PostFeedResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class CommentCreate(BaseModel):
+    body: str = Field(..., min_length=1, max_length=1000)
+
+
+class CommentResponse(BaseModel):
+    comment_id: str
+    post_id: str
+    author_user_id: str
+    author_name: str
+    body: str
+    created_at: datetime
+    updated_at: datetime

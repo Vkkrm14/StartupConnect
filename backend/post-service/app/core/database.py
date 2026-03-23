@@ -31,6 +31,12 @@ class MongoClient:
         )
         await post_likes.create_index("post_id")
 
+        post_comments = self.db.post_comments
+        await post_comments.create_index("comment_id", unique=True)
+        await post_comments.create_index("post_id")
+        await post_comments.create_index([("post_id", 1), ("created_at", -1)])
+        await post_comments.create_index("author_user_id")
+
     def get_db(self):
         if self.db is None:
             raise RuntimeError("MongoDB not initialized")

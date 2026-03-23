@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import '../../../../data/providers/api_client.dart';
 import '../models/post_model.dart';
+import '../models/post_comment_model.dart';
 
 class PostRepository {
   final ApiClient _apiClient;
@@ -122,6 +123,60 @@ class PostRepository {
       await _apiClient.delete('/api/v1/posts/$postId/like');
     } on DioException catch (e) {
       print('[PostRepository] unlikePost error: $e');
+      rethrow;
+    }
+  }
+
+  Future<List<PostCommentModel>> getComments(String postId) async {
+    try {
+      final response = await _apiClient.get('/api/v1/posts/$postId/comments');
+      final data = response.data;
+
+      if (data is List) {
+        return data
+            .map((item) =>
+                PostCommentModel.fromJson(item as Map<String, dynamic>))
+            .toList();
+      }
+
+      if (data is Map<String, dynamic>) {
+        final commentsRaw = data['comments'];
+        if (commentsRaw is List) {
+          return commentsRaw
+              .map((item) =>
+                  PostCommentModel.fromJson(item as Map<String, dynamic>))
+              .toList();
+        }
+      }
+
+      return [];
+    } on DioException {
+      rethrow;
+    }
+  }
+
+  Future<PostCommentModel> createComment({
+    required String postId,
+    required String body,
+  }) async {
+    try {
+      final response = await _apiClient.post(
+        '/api/v1/posts/$postId/comments',
+        data: {'body': body},
+      );
+      return PostCommentModel.fromJson(response.data as Map<String, dynamic>);
+    } on DioException {
+      rethrow;
+    }
+  }
+
+  Future<void> deleteComment({
+    required String postId,
+    required String commentId,
+  }) async {
+    try {
+      await _apiClient.delete('/api/v1/posts/$postId/comments/$commentId');
+    } on DioException {
       rethrow;
     }
   }
