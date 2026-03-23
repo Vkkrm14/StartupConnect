@@ -995,11 +995,18 @@ class EdgeService:
         )
         is_disputed = bool(reverse_report)
 
+        distrust_score = trust_scoring_service.compute_distrust_score(
+            severity=float(edge_data.severity),
+            is_disputed=is_disputed,
+            created_at=created_at.timestamp(),
+        )
+
         g.V().has('User', 'user_id', edge_data.from_user_id) \
             .addE('DISTRUSTS') \
             .to(__.V().has('User', 'user_id', edge_data.to_user_id)) \
             .property('edge_id',            edge_id) \
-            .property('distrust_score',     edge_data.distrust_score) \
+            .property('distrust_score',     distrust_score) \
+            .property('severity',           float(edge_data.severity)) \
             .property('reason_category',    edge_data.reason_category.value) \
             .property('evidence_notes',     edge_data.evidence_notes or '') \
             .property('is_active',          False) \
@@ -1029,8 +1036,9 @@ class EdgeService:
             edge_id=edge_id,
             from_user_id=edge_data.from_user_id,
             to_user_id=edge_data.to_user_id,
-            distrust_score=edge_data.distrust_score,
+            distrust_score=distrust_score,
             reason_category=edge_data.reason_category,
+            severity=float(edge_data.severity),
             is_active=False,
             is_disputed=is_disputed,
             moderator_reviewed=False,
@@ -1117,6 +1125,161 @@ class EdgeService:
         except Exception as e:
             logger.error(f"❌ get_distrusts_for_user failed: {e}")
             return []
+
+    async def dispute_distrusts_edge(
+        self, reported_user_id: str, accuser_id: str, appeal_reason: str = None
+    ) -> bool:
+        """
+        User disputing an active DISTRUSTS edge against them.
+        
+        This marks the DISTRUSTS edge as is_disputed=True, indicating:
+        - The accused user challenges the accusation
+        - The relationship may be reparable with mediation
+        - Paths through this node may be allowed (disputed edges not enforced)
+        
+        Args:
+            reported_user_id: User being accused (disputing the report)
+            accuser_id: User who filed the distrust report
+            appeal_reason: Optional explanation for the dispute
+        """
+        g = graph_client.get_traversal()
+        try:
+            existing = (
+                g.V().has('User', 'user_id', accuser_id)
+                .outE('DISTRUSTS')
+                .where(__.inV().has('User', 'user_id', reported_user_id))
+                .toList()
+            )
+            if not existing:
+                logger.warning(f"No DISTRUSTS edge found: {accuser_id} → {reported_user_id}")
+                return False
+            
+            g.V().has('User', 'user_id', accuser_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', reported_user_id)) \
+                .property('is_disputed', True) \
+                .property('appeal_reason', appeal_reason or '') \
+                .iterate()
+            
+            logger.info(
+                f"✅ Dispute filed: {reported_user_id} disputed DISTRUSTS from {accuser_id}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"❌ dispute_distrusts_edge failed: {e}")
+            return False
+
+    async def retract_distrusts_edge(
+        self, from_user_id: str, to_user_id: str, retraction_reason: str = None
+    ) -> bool:
+        """
+        User retracting their own DISTRUSTS report (changing their mind).
+        
+        This removes or deactivates the DISTRUSTS edge if it hasn't been:
+        - Activated (is_active=False retractable, is_active=True requires moderator)
+        - Associated with another dispute
+        
+        Args:
+            from_user_id: User retracting their report
+            to_user_id: User being retracted against
+            retraction_reason: Optional explanation for retraction
+        """
+        g = graph_client.get_traversal()
+        try:
+            # Check if edge exists and is still pending (not activated)
+            existing = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('DISTRUSTS')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .valueMap(True)
+                .toList()
+            )
+            
+            if not existing:
+                logger.warning(f"No DISTRUSTS edge found: {from_user_id} → {to_user_id}")
+                return False
+            
+            edge_data = existing[0]
+            is_active = self._extract_edge_value(edge_data, 'is_active', False)
+            is_disputed = self._extract_edge_value(edge_data, 'is_disputed', False)
+            
+            # Only allow retraction if pending or disputed
+            if is_active and not is_disputed:
+                logger.warning(
+                    f"Cannot retract active DISTRUSTS: {from_user_id} → {to_user_id} "
+                    f"(requires moderator review)"
+                )
+                return False
+            
+            # Delete the edge
+            g.V().has('User', 'user_id', from_user_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', to_user_id)) \
+                .drop() \
+                .iterate()
+            
+            logger.info(
+                f"✅ Retraction complete: {from_user_id} retracted DISTRUSTS against {to_user_id}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"❌ retract_distrusts_edge failed: {e}")
+            return False
+
+    async def resolve_dispute(
+        self, user_a_id: str, user_b_id: str, resolution_type: str = "mutual_resolution"
+    ) -> bool:
+        """
+        Resolve a mutual DISTRUSTS dispute between two users.
+        
+        This is called when:
+        - Both users agree to work through their conflict
+        - Mediation has determined the dispute is invalid
+        - The distrust expires
+        
+        Args:
+            user_a_id: First user
+            user_b_id: Second user
+            resolution_type: Type of resolution (mutual_resolution, invalid, mediated, expired)
+        """
+        g = graph_client.get_traversal()
+        try:
+            # Find both directions of DISTRUSTS
+            both_directions = (
+                g.V().has('User', 'user_id', user_a_id)
+                .both('DISTRUSTS')
+                .has('User', 'user_id', user_b_id)
+                .toList()
+            )
+            
+            if not both_directions or len(both_directions) == 0:
+                logger.warning(f"No mutual DISTRUSTS found: {user_a_id} ↔ {user_b_id}")
+                return False
+            
+            # Mark both as resolved instead of deleting (preserve history)
+            g.V().has('User', 'user_id', user_a_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', user_b_id)) \
+                .property('is_active', False) \
+                .property('resolution_type', resolution_type) \
+                .property('resolved_at', int(datetime.utcnow().timestamp())) \
+                .iterate()
+            
+            g.V().has('User', 'user_id', user_b_id) \
+                .outE('DISTRUSTS') \
+                .where(__.inV().has('User', 'user_id', user_a_id)) \
+                .property('is_active', False) \
+                .property('resolution_type', resolution_type) \
+                .property('resolved_at', int(datetime.utcnow().timestamp())) \
+                .iterate()
+            
+            logger.info(
+                f"✅ Dispute resolved: {user_a_id} ↔ {user_b_id} ({resolution_type})"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"❌ resolve_dispute failed: {e}")
+            return False
 
     # ═══════════════════════════════════════════════════════════════
     # VOUCHES EDGE

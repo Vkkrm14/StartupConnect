@@ -199,4 +199,32 @@ class ConnectionRepository {
       return false;
     }
   }
+
+  // ────────────────────────────────────────────
+  // Distrust operations
+  // ────────────────────────────────────────────
+
+  /// Get distrust reports filed by a user.
+  Future<List<Map<String, dynamic>>> getDistrustsByUser(String userId) async {
+    try {
+      final response = await _apiClient.get('/api/v1/edges/distrusts/by/$userId');
+      final List<dynamic> data = response.data['distrust_reports'] ?? [];
+      return data.whereType<Map<String, dynamic>>().toList();
+    } on DioException catch (e) {
+      print('Get distrusts by user error: ${ApiClient.getErrorMessage(e)}');
+      return [];
+    }
+  }
+
+  /// Get active distrust reports targeting a user.
+  Future<List<Map<String, dynamic>>> getDistrustsForUser(String userId) async {
+    try {
+      final response = await _apiClient.get('/api/v1/edges/distrusts/for/$userId');
+      final List<dynamic> data = response.data['active_distrust_reports'] ?? [];
+      return data.whereType<Map<String, dynamic>>().toList();
+    } on DioException catch (e) {
+      print('Get distrusts for user error: ${ApiClient.getErrorMessage(e)}');
+      return [];
+    }
+  }
 }

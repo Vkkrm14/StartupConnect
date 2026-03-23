@@ -25,6 +25,8 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
   List<UserModel> _connections = [];
   List<UserModel> _filtered = [];
   List<TrustEdgeModel> _pendingRequests = [];
+  final Set<String> _outgoingDistrustUserIds = {};
+  final Set<String> _incomingDistrustUserIds = {};
   bool _isLoading = true;
   bool _isPendingLoading = true;
   String? _currentUserId;
@@ -58,6 +60,7 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
       if (user != null) {
         _currentUserId = user.userId;
         final connections = await _userRepository.getConnections(user.userId);
+        await _loadDistrustIndicators(user.userId, connections);
         setState(() {
           _connections = connections;
           _filtered = connections;
@@ -73,6 +76,33 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
           SnackBar(content: Text('Error: ${ApiClient.getErrorMessage(e)}')),
         );
       }
+    }
+  }
+
+  Future<void> _loadDistrustIndicators(String userId, List<UserModel> connections) async {
+    try {
+      _outgoingDistrustUserIds.clear();
+      _incomingDistrustUserIds.clear();
+
+      for (final c in connections) {
+        final forward = await _connectionRepository.getTrustScore(
+          fromUserId: userId,
+          toUserId: c.userId,
+        );
+        final reverse = await _connectionRepository.getTrustScore(
+          fromUserId: c.userId,
+          toUserId: userId,
+        );
+
+        final fwdScore = (forward?['trust_score'] as num?)?.toDouble() ?? 0.0;
+        final revScore = (reverse?['trust_score'] as num?)?.toDouble() ?? 0.0;
+
+        if (fwdScore < 0) _outgoingDistrustUserIds.add(c.userId);
+        if (revScore < 0) _incomingDistrustUserIds.add(c.userId);
+      }
+    } catch (_) {
+      _outgoingDistrustUserIds.clear();
+      _incomingDistrustUserIds.clear();
     }
   }
 
@@ -186,10 +216,17 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
       _filtered = q.isEmpty
           ? _connections
           : _connections.where((c) {
-              return c.name.toLowerCase().contains(q) ||
-                  c.rolePrimary.toLowerCase().contains(q) ||
-                  c.domainTags.any((t) => t.toLowerCase().contains(q)) ||
-                  (c.geography?.toLowerCase().contains(q) ?? false);
+              final safeName = c.name.toLowerCase();
+              final safeRole = c.rolePrimary.toLowerCase();
+              final safeGeo = (c.geography ?? '').toLowerCase();
+              final safeTags = c.domainTags
+                  .where((t) => t.isNotEmpty)
+                  .map((t) => t.toLowerCase());
+
+              return safeName.contains(q) ||
+                  safeRole.contains(q) ||
+                  safeGeo.contains(q) ||
+                  safeTags.any((t) => t.contains(q));
             }).toList();
     });
   }
@@ -575,6 +612,9 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
   Widget _buildConnectionCard(BuildContext context, UserModel c) {
     final scoreColor = _scoreColor(c.reputationScore);
     final roleColor = _roleColor(c.rolePrimary);
+    final hasOutgoingDistrust = _outgoingDistrustUserIds.contains(c.userId);
+    final hasIncomingDistrust = _incomingDistrustUserIds.contains(c.userId);
+    final hasAnyDistrust = hasOutgoingDistrust || hasIncomingDistrust;
 
     return Dismissible(
       key: Key(c.userId),
@@ -711,6 +751,36 @@ class _ConnectionsScreenState extends State<ConnectionsScreen>
                                   style: TextStyle(
                                       fontSize: 12,
                                       color: Colors.grey[600]),
+                                ),
+                              ],
+                              if (hasAnyDistrust) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.red.withOpacity(0.12),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.red.shade300),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.warning_amber,
+                                          size: 11, color: Colors.red[700]),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        hasOutgoingDistrust
+                                            ? 'DISTRUSTED'
+                                            : 'DISTRUSTS YOU',
+                                        style: TextStyle(
+                                          color: Colors.red[700],
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ],
                             ],

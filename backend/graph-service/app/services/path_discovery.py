@@ -109,10 +109,23 @@ class PathDiscoveryService:
                                 __.outE('TRUSTS')
                                 .has('status', 'accepted')
                                 .not_(__.has('suspicion_flag', True))
-                                .inV().simplePath()
+                                # Filter out edges where target has active DISTRUSTS from anyone
+                                .inV()
+                                .not_(
+                                    __.inE('DISTRUSTS')
+                                    .has('is_active', True)
+                                    .not_(__.has('is_disputed', True))
+                                )
+                                .simplePath()
                             )
                             .times(hop_count)
                             .has('User', 'user_id', investor_id)
+                            # Final check: investor should not have active DISTRUSTS
+                            .not_(
+                                __.inE('DISTRUSTS')
+                                .has('is_active', True)
+                                .not_(__.has('is_disputed', True))
+                            )
                             .path()
                             .by(__.coalesce(__.values('user_id'), __.constant(None)))
                             .toList()
@@ -282,6 +295,35 @@ class PathDiscoveryService:
         # Filter out low-trust paths
         if any(t < self.min_trust for t in trust_scores):
             return None
+        
+        # Check for DISTRUSTS edges on any nodes in the path
+        def check_path_distrusts():
+            for node in nodes:
+                user_id = node.user_id
+                # Check incoming and outgoing DISTRUSTS
+                in_distrusts = (
+                    g.V().has('User', 'user_id', user_id)
+                    .inE('DISTRUSTS')
+                    .has('is_active', True)
+                    .not_(__.has('is_disputed', True))
+                    .count()
+                    .next()
+                )
+                out_distrusts = (
+                    g.V().has('User', 'user_id', user_id)
+                    .outE('DISTRUSTS')
+                    .has('is_active', True)
+                    .not_(__.has('is_disputed', True))
+                    .count()
+                    .next()
+                )
+                if (in_distrusts > 0) or (out_distrusts > 0):
+                    return True
+            return False
+        
+        has_distrusts = await loop.run_in_executor(None, check_path_distrusts)
+        if has_distrusts:
+            return None  # Filter out paths with DISTRUSTS edges
         
         # Calculate aggregate path score
         hop_count = len(nodes) - 1

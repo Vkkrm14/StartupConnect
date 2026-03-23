@@ -20,6 +20,8 @@ SEARCH_SERVICE_URL = os.getenv("SEARCH_SERVICE_URL", "http://localhost:8003")
 JANUSGRAPH_URL = os.getenv("JANUSGRAPH_URL", "ws://localhost:8182/gremlin")
 API_TIMEOUT = 10
 DEFAULT_PASSWORD = "password123"  # Default password for all seeded users
+EXTRA_TRUST_CONNECTION_TARGET = int(os.getenv("EXTRA_TRUST_CONNECTION_TARGET", "18"))
+EXTRA_DISTRUST_EDGES_TARGET = int(os.getenv("EXTRA_DISTRUST_EDGES_TARGET", "8"))
 
 # Sample data0
 FOUNDERS = [
@@ -28,17 +30,26 @@ FOUNDERS = [
     {"name": "Carol Davis", "email": "carol@innovate.io", "domain": ["e-commerce", "saas"], "geography": "Austin"},
     {"name": "David Lee", "email": "david@venture.io", "domain": ["fintech", "blockchain"], "geography": "San Francisco"},
     {"name": "Emma Wilson", "email": "emma@startup.ai", "domain": ["ai-ml", "edtech"], "geography": "Boston"},
+    {"name": "Fiona Park", "email": "fiona@climategrid.io", "domain": ["climate", "saas"], "geography": "Seattle"},
+    {"name": "George Kim", "email": "george@agrotech.co", "domain": ["agritech", "ai-ml"], "geography": "Chicago"},
+    {"name": "Hannah Reed", "email": "hannah@mobipay.app", "domain": ["fintech", "mobile"], "geography": "Miami"},
 ]
 
 INVESTORS = [
     {"name": "Frank Miller", "email": "frank@vc-firm.com", "domain": ["fintech", "saas"], "geography": "Palo Alto"},
     {"name": "Grace Chen", "email": "grace@capital.vc", "domain": ["healthtech", "ai-ml"], "geography": "San Francisco"},
     {"name": "Henry Brown", "email": "henry@invest.com", "domain": ["e-commerce", "blockchain"], "geography": "New York"},
+    {"name": "Isabella Moore", "email": "isabella@northstar.vc", "domain": ["climate", "agritech"], "geography": "Denver"},
+    {"name": "James Patel", "email": "james@earlystage.fund", "domain": ["edtech", "mobile"], "geography": "Los Angeles"},
+    {"name": "Karen Liu", "email": "karen@alphaangels.com", "domain": ["healthtech", "fintech"], "geography": "San Diego"},
 ]
 
 CONNECTORS = [
     {"name": "Ivy Martinez", "email": "ivy@network.com", "domain": ["fintech", "saas"], "geography": "San Francisco"},
     {"name": "Jack Taylor", "email": "jack@connect.io", "domain": ["healthtech", "ai-ml"], "geography": "Boston"},
+    {"name": "Liam Scott", "email": "liam@bridgehub.net", "domain": ["climate", "fintech"], "geography": "Seattle"},
+    {"name": "Nora Evans", "email": "nora@warmintro.co", "domain": ["edtech", "mobile"], "geography": "Chicago"},
+    {"name": "Omar Rahman", "email": "omar@venturemesh.io", "domain": ["agritech", "healthtech"], "geography": "Austin"},
 ]
 
 STARTUPS = [
@@ -46,6 +57,9 @@ STARTUPS = [
     {"name": "HealthAI", "domain": "healthtech", "stage": "seriesA", "geography": "Boston"},
     {"name": "EduTech Pro", "domain": "edtech", "stage": "seed", "geography": "Austin"},
     {"name": "BlockChain Solutions", "domain": "blockchain", "stage": "seriesB", "geography": "New York"},
+    {"name": "AgroSense", "domain": "agritech", "stage": "seed", "geography": "Chicago"},
+    {"name": "ClimateLedger", "domain": "climate", "stage": "seriesA", "geography": "Seattle"},
+    {"name": "PocketCare", "domain": "mobile", "stage": "seed", "geography": "Los Angeles"},
 ]
 
 
@@ -84,6 +98,32 @@ def get_gremlin_traversal():
         message_serializer=GraphSONSerializersV3d0()
     )
     return traversal().withRemote(conn), conn
+
+
+def get_distrust_counts() -> Dict[str, int]:
+    """Return distrust edge counts for verification after seeding."""
+    try:
+        g, conn = get_gremlin_traversal()
+        try:
+            total = int(g.E().hasLabel('DISTRUSTS').count().next())
+            active = int(
+                g.E().hasLabel('DISTRUSTS')
+                .has('is_active', True)
+                .not_(__.has('is_disputed', True))
+                .count()
+                .next()
+            )
+            disputed = int(
+                g.E().hasLabel('DISTRUSTS')
+                .has('is_disputed', True)
+                .count()
+                .next()
+            )
+            return {"total": total, "active_effective": active, "disputed": disputed}
+        finally:
+            conn.close()
+    except Exception:
+        return {"total": 0, "active_effective": 0, "disputed": 0}
 
 
 def check_service_health() -> bool:
@@ -144,12 +184,15 @@ def clear_database() -> bool:
         return False
 
 
-def get_user_by_name(name: str) -> Dict:
-    """Check if a user already exists by name"""
+def get_user_by_email(email: str) -> Dict:
+    """Fetch an existing user by email via Graph Service API."""
     try:
-        # Note: This would require a GET endpoint that accepts name query
-        # For now, we'll use a workaround with direct gremlin query via a hypothetical endpoint
-        # In a real scenario, you'd add a query endpoint to the Graph Service
+        response = requests.get(
+            f"{GRAPH_SERVICE_URL}/api/v1/vertices/users/by-email/{email}",
+            timeout=API_TIMEOUT,
+        )
+        if response.status_code == 200:
+            return response.json()
         return None
     except Exception:
         return None
@@ -158,7 +201,29 @@ def get_user_by_name(name: str) -> Dict:
 def get_startup_by_name(name: str) -> Dict:
     """Check if a startup already exists by name"""
     try:
-        return None
+        g, conn = get_gremlin_traversal()
+        try:
+            startup = (
+                g.V()
+                .has('Startup', 'name', name)
+                .valueMap('startup_id', 'name', 'domain', 'stage', 'geography', 'created_at')
+                .limit(1)
+                .toList()
+            )
+            if not startup:
+                return None
+
+            row = startup[0]
+            return {
+                'startup_id': row.get('startup_id', [None])[0],
+                'name': row.get('name', [''])[0],
+                'domain': row.get('domain', [''])[0],
+                'stage': row.get('stage', [''])[0],
+                'geography': row.get('geography', [''])[0],
+                'created_at': row.get('created_at', [None])[0],
+            }
+        finally:
+            conn.close()
     except Exception:
         return None
 
@@ -185,10 +250,26 @@ def create_user(user_data: dict, role: str) -> Dict:
             json=payload,
             timeout=API_TIMEOUT
         )
+        if response.status_code in (200, 201):
+            return response.json()
+
+        # Common on reruns: backend may throw 500 for duplicate email constraints.
+        existing = get_user_by_email(user_data["email"])
+        if existing:
+            print(f"  ℹ️ Reusing existing user by email: {user_data['email']}")
+            return existing
+
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to create user {user_data['name']}: {e}")
+        existing = get_user_by_email(user_data["email"])
+        if existing:
+            print(f"  ℹ️ Reusing existing user by email: {user_data['email']}")
+            return existing
+        err_detail = ""
+        if hasattr(e, "response") and e.response is not None:
+            err_detail = f" | response={e.response.text}"
+        print(f"❌ Failed to create user {user_data['name']}: {e}{err_detail}")
         raise
 
 
@@ -235,10 +316,26 @@ def create_startup(startup_data: dict) -> Dict:
             json=payload,
             timeout=API_TIMEOUT
         )
+        if response.status_code in (200, 201):
+            return response.json()
+
+        # Reruns may fail if startup already exists; fall back to graph lookup by name.
+        existing = get_startup_by_name(startup_data["name"])
+        if existing and existing.get("startup_id"):
+            print(f"  ℹ️ Reusing existing startup by name: {startup_data['name']}")
+            return existing
+
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to create startup {startup_data['name']}: {e}")
+        existing = get_startup_by_name(startup_data["name"])
+        if existing and existing.get("startup_id"):
+            print(f"  ℹ️ Reusing existing startup by name: {startup_data['name']}")
+            return existing
+        err_detail = ""
+        if hasattr(e, "response") and e.response is not None:
+            err_detail = f" | response={e.response.text}"
+        print(f"❌ Failed to create startup {startup_data['name']}: {e}{err_detail}")
         raise
 
 
@@ -413,6 +510,61 @@ def create_invested_in_edge(investor_id: str, startup_id: str, round_type: str, 
         raise
 
 
+def create_distrusts_edge(from_user_id: str, to_user_id: str, reason_category: str, severity: float) -> Dict:
+    """
+    Create a DISTRUSTS edge via Graph Service API.
+    
+    Args:
+        from_user_id: User filing the distrust report
+        to_user_id: User being reported
+        reason_category: fraud, unreliable_collaborator, harassment, dispute
+        severity: 0.0-1.0 severity level
+    
+    Returns:
+        Response from Graph Service
+    """
+    payload = {
+        "from_user_id": from_user_id,
+        "to_user_id": to_user_id,
+        "reason_category": reason_category,
+        "severity": severity,
+        "evidence_notes": f"Seeded distrust edge for testing"
+    }
+    
+    try:
+        response = requests.post(
+            f"{GRAPH_SERVICE_URL}/api/v1/edges/distrusts",
+            json=payload,
+            timeout=API_TIMEOUT
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        err_detail = ""
+        if hasattr(e, "response") and e.response is not None:
+            err_detail = f" | response={e.response.text}"
+        print(f"❌ Failed to create DISTRUSTS edge: {e}{err_detail}")
+        raise
+
+
+def activate_distrusts_edge(from_user_id: str, to_user_id: str) -> bool:
+    """Activate a DISTRUSTS report so it takes effect in path filtering."""
+    try:
+        response = requests.put(
+            f"{GRAPH_SERVICE_URL}/api/v1/edges/distrusts/activate",
+            params={"from_user_id": from_user_id, "to_user_id": to_user_id},
+            timeout=API_TIMEOUT,
+        )
+        response.raise_for_status()
+        return True
+    except requests.exceptions.RequestException as e:
+        err_detail = ""
+        if hasattr(e, "response") and e.response is not None:
+            err_detail = f" | response={e.response.text}"
+        print(f"❌ Failed to activate DISTRUSTS edge: {e}{err_detail}")
+        return False
+
+
 def seed_data():
     """Seed the database with sample data using Graph Service API"""
     
@@ -490,25 +642,83 @@ def seed_data():
     # Create mutual accepted TRUSTS edges (connection network)
     print("\n🤝 Creating mutual trust connections...")
     trust_relationships = [
-        # Founder → Connector
+        # Founder ↔ Connector (primary warm-intro channels)
         ("Alice Johnson", "Ivy Martinez", 0.85, ["fintech"]),
         ("Bob Smith", "Jack Taylor", 0.80, ["healthtech", "ai-ml"]),
         ("Carol Davis", "Ivy Martinez", 0.75, ["e-commerce"]),
-        
-        # Connector → Investor
+        ("David Lee", "Liam Scott", 0.82, ["fintech", "climate"]),
+        ("Emma Wilson", "Nora Evans", 0.84, ["edtech", "mobile"]),
+        ("Fiona Park", "Liam Scott", 0.90, ["climate"]),
+        ("George Kim", "Omar Rahman", 0.86, ["agritech", "ai-ml"]),
+        ("Hannah Reed", "Nora Evans", 0.81, ["mobile", "fintech"]),
+
+        # Connector ↔ Investor (distribution routes)
         ("Ivy Martinez", "Frank Miller", 0.90, ["fintech"]),
         ("Ivy Martinez", "Grace Chen", 0.85, ["saas"]),
         ("Jack Taylor", "Grace Chen", 0.88, ["healthtech"]),
-        
-        # Founder → Founder
+        ("Liam Scott", "Isabella Moore", 0.89, ["climate", "agritech"]),
+        ("Nora Evans", "James Patel", 0.87, ["edtech", "mobile"]),
+        ("Omar Rahman", "Karen Liu", 0.83, ["healthtech"]),
+
+        # Founder ↔ Founder (peer network)
         ("Alice Johnson", "David Lee", 0.70, ["fintech"]),
         ("Bob Smith", "Emma Wilson", 0.75, ["ai-ml"]),
-        
-        # Investor → Investor
+        ("Fiona Park", "George Kim", 0.78, ["climate", "agritech"]),
+        ("Hannah Reed", "Alice Johnson", 0.74, ["fintech", "mobile"]),
+
+        # Investor ↔ Investor (syndicate network)
         ("Frank Miller", "Henry Brown", 0.80, []),
         ("Grace Chen", "Frank Miller", 0.85, []),
+        ("Isabella Moore", "Karen Liu", 0.79, ["healthtech"]),
+        ("James Patel", "Grace Chen", 0.76, ["edtech"]),
+
+        # Select founder ↔ investor direct trust (post-deal relationships)
+        ("David Lee", "Frank Miller", 0.72, ["fintech"]),
+        ("Fiona Park", "Isabella Moore", 0.77, ["climate"]),
+        ("Emma Wilson", "James Patel", 0.73, ["edtech"]),
     ]
-    
+
+    # Build a richer graph by adding extra generated bridge links across clusters.
+    profile_lookup = {
+        **{u["name"]: u for u in FOUNDERS},
+        **{u["name"]: u for u in INVESTORS},
+        **{u["name"]: u for u in CONNECTORS},
+    }
+    all_names = list(profile_lookup.keys())
+    pair_key_set = {
+        tuple(sorted((a, b))) for a, b, _, _ in trust_relationships
+    }
+    extra_trust_relationships = []
+    attempts = 0
+    max_attempts = EXTRA_TRUST_CONNECTION_TARGET * 12
+    while len(extra_trust_relationships) < EXTRA_TRUST_CONNECTION_TARGET and attempts < max_attempts:
+        attempts += 1
+        from_name, to_name = random.sample(all_names, 2)
+        pair_key = tuple(sorted((from_name, to_name)))
+        if pair_key in pair_key_set:
+            continue
+
+        from_domains = profile_lookup[from_name].get("domain", [])
+        to_domains = profile_lookup[to_name].get("domain", [])
+        shared_domains = sorted(set(from_domains).intersection(to_domains))
+        if shared_domains:
+            chosen_domains = shared_domains[:2]
+        else:
+            merged = sorted(set(from_domains + to_domains))
+            chosen_domains = merged[:2] if merged else []
+
+        trust_score_hint = round(random.uniform(0.62, 0.92), 2)
+        extra_trust_relationships.append(
+            (from_name, to_name, trust_score_hint, chosen_domains)
+        )
+        pair_key_set.add(pair_key)
+
+    trust_relationships.extend(extra_trust_relationships)
+    print(
+        f"  ℹ️ Added {len(extra_trust_relationships)} generated bridge trust links "
+        f"(target={EXTRA_TRUST_CONNECTION_TARGET})"
+    )
+
     for from_name, to_name, trust_score_hint, domain_tags in trust_relationships:
         forward, reverse = create_mutual_trust_connection(
             user_ids[from_name],
@@ -575,6 +785,91 @@ def seed_data():
         )
         print(f"  ✅ {investor_name} invested in {startup_name} ({round_type})")
     
+    # Create DISTRUSTS edges (conflict scenarios)
+    print("\n⚠️  Creating DISTRUSTS edges (conflict test scenarios)...")
+    distrust_relationships = [
+        # Mutual dispute from an existing trusted pair
+        ("Bob Smith", "Emma Wilson", "unreliable_collaborator", 0.7),
+        ("Emma Wilson", "Bob Smith", "dispute", 0.6),
+
+        # One-way distrust on existing trusted pairs
+        ("David Lee", "Alice Johnson", "fraud", 0.8),
+        ("George Kim", "Omar Rahman", "unreliable_collaborator", 0.65),
+        ("Nora Evans", "James Patel", "dispute", 0.45),
+
+        # Lower severity distrust (for resolution testing)
+        ("Hannah Reed", "Nora Evans", "dispute", 0.35),
+        ("Fiona Park", "Isabella Moore", "dispute", 0.3),
+    ]
+
+    # Generate additional distrusts from existing trusted pairs to satisfy edge guardrails.
+    distrust_reasons = ["dispute", "unreliable_collaborator", "fraud", "harassment"]
+    distrust_pair_set = {(a, b) for a, b, _, _ in distrust_relationships}
+    trust_pair_directions = []
+    for a, b, _, _ in trust_relationships:
+        trust_pair_directions.append((a, b))
+        trust_pair_directions.append((b, a))
+
+    from_user_distrust_counts = {}
+    for from_name, _, _, _ in distrust_relationships:
+        from_user_distrust_counts[from_name] = from_user_distrust_counts.get(from_name, 0) + 1
+
+    random.shuffle(trust_pair_directions)
+    for from_name, to_name in trust_pair_directions:
+        if len(distrust_relationships) >= (7 + EXTRA_DISTRUST_EDGES_TARGET):
+            break
+        if (from_name, to_name) in distrust_pair_set:
+            continue
+        if from_user_distrust_counts.get(from_name, 0) >= 3:
+            continue
+        reason = random.choice(distrust_reasons)
+        severity = round(random.uniform(0.28, 0.82), 2)
+        distrust_relationships.append((from_name, to_name, reason, severity))
+        distrust_pair_set.add((from_name, to_name))
+        from_user_distrust_counts[from_name] = from_user_distrust_counts.get(from_name, 0) + 1
+
+    print(
+        f"  ℹ️ Prepared {len(distrust_relationships)} distrust scenarios "
+        f"(base=7, generated={max(len(distrust_relationships) - 7, 0)})"
+    )
+    
+    distrust_count = 0
+    distrust_active_count = 0
+    distrust_disputed_count = 0
+    for from_name, to_name, reason, severity in distrust_relationships:
+        try:
+            created = create_distrusts_edge(
+                user_ids[from_name],
+                user_ids[to_name],
+                reason,
+                severity
+            )
+            distrust_count += 1
+
+            # For seed/demo behavior, auto-activate non-disputed reports so they impact traversal.
+            # Disputed reports remain non-effective by policy.
+            is_disputed = bool(created.get("is_disputed", False))
+            if is_disputed:
+                distrust_disputed_count += 1
+                print(
+                    f"  ✅ {from_name} → {to_name} ({reason}, severity={severity}) "
+                    f"[disputed, left inactive]"
+                )
+            else:
+                activated = activate_distrusts_edge(user_ids[from_name], user_ids[to_name])
+                if activated:
+                    distrust_active_count += 1
+                    print(
+                        f"  ✅ {from_name} → {to_name} ({reason}, severity={severity}) "
+                        f"[activated]"
+                    )
+                else:
+                    print(
+                        f"  ⚠️  {from_name} → {to_name} created but activation failed"
+                    )
+        except Exception as e:
+            print(f"  ⚠️  Failed to create DISTRUSTS: {from_name} → {to_name}: {e}")
+    
     # Stats
     print("\n📊 Database Statistics:")
     print(f"  Users created: {len(user_ids)}")
@@ -585,6 +880,15 @@ def seed_data():
     print(f"  Trust edges created: {len(trust_relationships) * 2}")
     print(f"  Founded edges created: {len(founded_relationships)}")
     print(f"  Investment edges created: {len(investment_relationships)}")
+    print(f"  Distrust edges created: {distrust_count}")
+    print(f"    - Active distrust edges: {distrust_active_count}")
+    print(f"    - Disputed/inactive distrust edges: {distrust_disputed_count}")
+
+    distrust_graph_counts = get_distrust_counts()
+    print("  Distrust edges in graph (post-seed verification):")
+    print(f"    - Total DISTRUSTS edges: {distrust_graph_counts['total']}")
+    print(f"    - Active/effective edges: {distrust_graph_counts['active_effective']}")
+    print(f"    - Disputed edges: {distrust_graph_counts['disputed']}")
     
     print("\n✅ Data seeding completed successfully!")
     print("\n💡 Next steps:")

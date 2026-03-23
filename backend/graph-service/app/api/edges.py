@@ -197,13 +197,24 @@ async def increment_successful_intros(from_user_id: str, to_user_id: str):
 
 @router.get("/trusts/score/{from_user_id}/{to_user_id}")
 async def get_trust_score(from_user_id: str, to_user_id: str):
-    """Get the calculated trust score between two users"""
-    score = await trust_scoring_service.calculate_trust_score(from_user_id, to_user_id)
+    """Get the effective trust score between two users (includes active DISTRUSTS)."""
+    score = await trust_scoring_service.get_effective_trust_score(from_user_id, to_user_id)
+    if score <= -0.7:
+        trust_level = "strong_distrust"
+    elif score < 0:
+        trust_level = "distrust"
+    elif score >= 0.7:
+        trust_level = "high"
+    elif score >= 0.3:
+        trust_level = "medium"
+    else:
+        trust_level = "low"
+
     return {
         "from_user_id": from_user_id,
         "to_user_id": to_user_id,
         "trust_score": score,
-        "trust_level": "high" if score >= 0.7 else "medium" if score >= 0.3 else "low"
+        "trust_level": trust_level
     }
 
 

@@ -28,19 +28,31 @@ class UserModel {
   });
   
   factory UserModel.fromJson(Map<String, dynamic> json) {
+    List<String> safeStringList(dynamic value) {
+      if (value is List) {
+        return value
+            .where((e) => e != null)
+            .map((e) => e.toString())
+            .toList();
+      }
+      return const [];
+    }
+
     return UserModel(
-      userId: json['user_id'],
-      name: json['name'],
-      email: json['email'],
-      bio: json['bio'],
-      rolePrimary: json['role_primary'],
-      rolesSecondary: List<String>.from(json['roles_secondary'] ?? []),
-      domainTags: List<String>.from(json['domain_tags'] ?? []),
-      geography: json['geography'],
+      userId: (json['user_id'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      email: json['email']?.toString(),
+      bio: json['bio']?.toString(),
+      rolePrimary: (json['role_primary'] ?? '').toString(),
+      rolesSecondary: safeStringList(json['roles_secondary']),
+      domainTags: safeStringList(json['domain_tags']),
+      geography: json['geography']?.toString(),
       experienceYears: json['experience_years'] ?? 0,
       reputationScore: (json['reputation_score'] ?? 0.0).toDouble(),
-      verificationStatus: json['verification_status'] ?? 'unverified',
-      createdAt: DateTime.parse(json['created_at']),
+      verificationStatus: (json['verification_status'] ?? 'unverified').toString(),
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'].toString())
+          : DateTime.now(),
     );
   }
   

@@ -57,6 +57,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       // Check connection status
       if (_currentUserId != null && _currentUserId != widget.userId) {
         await _checkConnectionStatus();
+        await _loadTrustScores();
       }
 
       setState(() {
@@ -472,9 +473,19 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   }
 
   Color _getTrustColor(double score) {
+    if (score <= -0.7) return Colors.red.shade900;
+    if (score < 0) return Colors.red;
     if (score >= 0.7) return Colors.green;
     if (score >= 0.4) return Colors.amber;
-    return Colors.red;
+    return Colors.orange;
+  }
+
+  String _getTrustLabel(double score) {
+    if (score <= -0.7) return 'Strong Distrust';
+    if (score < 0) return 'Distrust';
+    if (score >= 0.7) return 'High Trust';
+    if (score >= 0.4) return 'Medium Trust';
+    return 'Low Trust';
   }
 
   Widget _buildTrustScoresSection() {
@@ -520,6 +531,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   Widget _buildTrustRow({required String label, required double score}) {
     final color = _getTrustColor(score);
+    final indicatorValue = score.abs().clamp(0.0, 1.0);
+    final isNegative = score < 0;
     return Row(
       children: [
         SizedBox(
@@ -533,21 +546,43 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
-              value: score.clamp(0.0, 1.0),
+              value: indicatorValue,
               minHeight: 6,
               backgroundColor: Colors.grey[200],
               valueColor: AlwaysStoppedAnimation<Color>(color),
             ),
           ),
         ),
-        const SizedBox(width: 8),
-        Text(
-          score.toStringAsFixed(2),
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
+        const SizedBox(width: 10),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              score.toStringAsFixed(2),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            Text(
+              _getTrustLabel(score),
+              style: TextStyle(
+                fontSize: 10,
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            if (isNegative)
+              Text(
+                'DISTRUST',
+                style: TextStyle(
+                  fontSize: 9,
+                  color: Colors.red.shade800,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+          ],
         ),
       ],
     );

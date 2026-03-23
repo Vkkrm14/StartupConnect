@@ -26,7 +26,12 @@ class InvestmentVisibility(str, Enum):
 # ========================================
 class EdgeBase(BaseModel):
     """Common properties for all edges"""
-    trust_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    trust_score: float = Field(
+        default=0.5,
+        ge=-1.0,
+        le=1.0,
+        description="Trust score: -1.0 (distrust) to 1.0 (high trust), 0.0 (neutral)"
+    )
     strength_score: float = Field(default=0.5, ge=0.0, le=1.0)
     recency_score: float = Field(default=1.0, ge=0.0, le=1.0)
     interaction_count: int = Field(default=0, ge=0)
@@ -35,11 +40,13 @@ class EdgeBase(BaseModel):
 # TRUSTS Edge
 # ========================================
 class TrustsEdgeCreate(EdgeBase):
+    """Create TRUSTS edge with optional negative trust (distrust) scores"""
     from_user_id: str
     to_user_id: str
     endorsement_count: int = Field(default=0, ge=0)
     domain_tags: List[str] = Field(default_factory=list)
     # Per-domain trust scores, e.g. {"ai": 0.8, "fintech": 0.6}
+    # Supports negative values for domain-specific distrust
     domain_trust_scores: Optional[dict] = Field(default_factory=dict)
 
     @field_validator('domain_tags')
@@ -63,6 +70,8 @@ class TrustsEdgeResponse(EdgeBase):
     suspicion_flag: bool = False
     last_interaction_at: Optional[datetime]
     created_at: datetime
+    # Negative trust indicator
+    has_distrust_override: bool = False  # True if DISTRUSTS edge overrides this
 
 # ========================================
 # FOUNDED Edge
@@ -135,8 +144,13 @@ class DisTrustsReasonCategory(str, Enum):
 class DisTrustsEdgeCreate(BaseModel):
     from_user_id: str
     to_user_id: str
-    distrust_score: float = Field(default=0.7, ge=0.0, le=1.0)
     reason_category: DisTrustsReasonCategory
+    severity: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Severity of distrust (0.0=mild, 1.0=extreme)"
+    )
     # Evidence notes are stored but only visible to moderators
     evidence_notes: Optional[str] = Field(default=None, max_length=1000)
 
@@ -144,13 +158,23 @@ class DisTrustsEdgeResponse(BaseModel):
     edge_id: str
     from_user_id: str
     to_user_id: str
-    distrust_score: float
+    distrust_score: float = Field(
+        ge=-1.0,
+        le=-0.0,
+        description="Negative trust score (-1.0 to -0.0)"
+    )
     reason_category: DisTrustsReasonCategory
+    severity: float
     is_active: bool           # False until moderator review passes
     is_disputed: bool
+    dispute_count: int = 0
     moderator_reviewed: bool
     created_at: datetime
     expires_at: datetime      # created_at + 365 days
+    # Conflict resolution fields
+    appeal_reason: Optional[str] = None         # Reason for disputing the DISTRUSTS
+    resolution_type: Optional[str] = None       # mutual_resolution, invalid, mediated, expired
+    resolved_at: Optional[datetime] = None      # When dispute was resolved
 
 # ========================================
 # VOUCHES Edge

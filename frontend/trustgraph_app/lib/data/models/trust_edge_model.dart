@@ -88,8 +88,17 @@ class TrustEdgeModel {
   bool get isRejected => status == 'rejected';
 
   String get trustLevel {
+    // Now supports negative trust scores (-1.0 to 1.0)
     if (trustScore >= 0.7) return 'high';
-    if (trustScore >= 0.3) return 'medium';
+    if (trustScore >= 0.4) return 'medium';
+    if (trustScore > 0) return 'low';
+    if (trustScore == 0) return 'neutral';
+    // Negative scores indicate low trust or distrust tendency
+    if (trustScore <= -0.7) return 'very_low';
+    if (trustScore <= -0.4) return 'low_negative';
     return 'low';
   }
+
+  /// Check if this TRUSTS edge has conflicting distrust signal
+  bool get hasDistrustOverride => trustScore < 0;
 }

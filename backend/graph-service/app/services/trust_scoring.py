@@ -88,6 +88,114 @@ class TrustScoringService:
         days_since = (datetime.utcnow().timestamp() - last_interaction_at) / 86400
         return round(max(0.0, 1.0 - days_since / 90.0), 4)
 
+    @staticmethod
+    def compute_distrust_score(
+        severity: float,
+        is_disputed: bool = False,
+        created_at: float = None
+    ) -> float:
+        """
+        Compute negative trust score for DISTRUSTS edges.
+        
+        Formula: distrust_score = -min(severity * weight_factor, 1.0)
+        
+        Args:
+            severity: 0.0-1.0 (how severe the distrust is)
+            is_disputed: if True, reduce weight to 0.5x (contested distrust)
+            created_at: timestamp; distrust expires after 365 days
+        
+        Returns:
+            Negative score from -1.0 to -0.0
+        """
+        weight = 1.0
+        
+        # Apply dispute penalty
+        if is_disputed:
+            weight *= 0.5
+        
+        # Apply expiration decay (expires after 365 days)
+        if created_at:
+            days_since = (datetime.utcnow().timestamp() - created_at) / 86400
+            if days_since > 365:
+                weight = 0.0  # Expired distrust has no weight
+            elif days_since > 270:  # After 270 days, decay linearly
+                remaining_days = 365 - days_since
+                weight *= max(0.0, remaining_days / 95)  # 95-day linear decay
+        
+        distrust_value = -min(severity * weight, 1.0)
+        return round(distrust_value, 4)
+
+    async def get_effective_trust_score(
+        self,
+        from_user_id: str,
+        to_user_id: str
+    ) -> float:
+        """
+        Get the effective trust score between two users.
+        
+        Resolution order:
+        1. If active DISTRUSTS edge exists (and not expired) → use distrust_score
+        2. Elif TRUSTS edge exists → use trust_score
+        3. Else → return 0.0 (neutral)
+        
+        This handles conflict resolution when both edges exist.
+        """
+        g = graph_client.get_traversal()
+        
+        try:
+            # Check for active DISTRUSTS edge
+            distrusts = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('DISTRUSTS').has('is_active', True)
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .valueMap(True)
+                .toList()
+            )
+            
+            if distrusts:
+                distrust_edge = distrusts[0]
+                severity = self._unwrap_value(distrust_edge.get('severity'), 0.6)
+                is_disputed = self._unwrap_value(distrust_edge.get('is_disputed'), False)
+                created_at_raw = self._unwrap_value(distrust_edge.get('created_at'), None)
+                created_at = float(created_at_raw) if created_at_raw else None
+                
+                return self.compute_distrust_score(
+                    severity=float(severity),
+                    is_disputed=bool(is_disputed),
+                    created_at=created_at
+                )
+            
+            # Fall back to TRUSTS edge
+            edge_data = (
+                g.V().has('User', 'user_id', from_user_id)
+                .outE('TRUSTS').has('status', 'accepted')
+                .where(__.inV().has('User', 'user_id', to_user_id))
+                .valueMap(True)
+                .toList()
+            )
+            
+            if edge_data:
+                result = edge_data[0]
+                interaction_count = self._unwrap_value(result.get('interaction_count'), 0)
+                successful_intros = self._unwrap_value(result.get('successful_intros'), 0)
+                last_interaction_raw = self._unwrap_value(result.get('last_interaction_at'), None)
+                decay_factor_raw = self._unwrap_value(result.get('interaction_decay_factor'), 1.0)
+                last_interaction_at = float(last_interaction_raw) if last_interaction_raw else None
+                interaction_decay_factor = float(decay_factor_raw) if decay_factor_raw is not None else 1.0
+                
+                return self.compute_score(
+                    interaction_count=int(interaction_count),
+                    successful_intros=int(successful_intros),
+                    last_interaction_at=last_interaction_at,
+                    interaction_decay_factor=interaction_decay_factor
+                )
+            
+            return 0.0  # Neutral: no edge exists
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get effective trust score: {str(e)}")
+            return 0.0
+
     async def calculate_trust_score(
         self,
         from_user_id: str,
@@ -316,13 +424,17 @@ class TrustScoringService:
     
     async def update_reputation_score(self, user_id: str) -> float:
         """
-        Calculate and update user's reputation score.
+        Calculate and update user's reputation score with distrust penalty.
 
-        4-component formula (weights sum to 1.0):
-          rep = avg_outgoing_trust  * 0.35
-              + intro_success_rate  * 0.30
-              + trust_weighted_in   * 0.20   (how much trusted peers trust you)
-              + vouch_score         * 0.15
+        5-component formula (weights sum to 1.0 before penalty):
+          base_rep = avg_outgoing_trust  * 0.35
+                   + intro_success_rate  * 0.30
+                   + trust_weighted_in   * 0.20   (how much trusted peers trust you)
+                   + vouch_score         * 0.15
+          
+          final_rep = max(base_rep - distrust_penalty, 0.0)
+          
+        distrust_penalty = active_distrusts_count * 0.05 (5% per active distrust flag)
         """
         g = graph_client.get_traversal()
 
@@ -373,20 +485,35 @@ class TrustScoringService:
             # ── Vouch score ────────────────────────────────────────────────────
             vouch_score = await self.compute_vouch_score(user_id)
 
-            reputation = min(max(
+            # ── Distrust penalty (incoming DISTRUSTS edges) ──────────────────────
+            incoming_distrusts = (
+                g.V().has('User', 'user_id', user_id)
+                .inE('DISTRUSTS').has('is_active', True)
+                .not_(__.has('is_disputed', True))  # Filter out disputed distrusts
+                .count()
+                .next()
+            )
+            distrust_penalty = int(incoming_distrusts) * 0.05
+
+            # ── Calculate final reputation ────────────────────────────────────────
+            base_reputation = (
                 avg_trust        * 0.35
                 + success_rate   * 0.30
                 + trust_weighted_in * 0.20
-                + vouch_score    * 0.15,
-                0.0
-            ), 1.0)
+                + vouch_score    * 0.15
+            )
+            
+            reputation = min(max(base_reputation - distrust_penalty, 0.0), 1.0)
 
             # Update vertex
             g.V().has('User', 'user_id', user_id) \
                 .property('reputation_score', reputation) \
                 .iterate()
 
-            logger.info(f"✅ Updated reputation for {user_id}: {reputation:.3f}")
+            logger.info(
+                f"✅ Updated reputation for {user_id}: {reputation:.3f} "
+                f"(base={base_reputation:.3f}, distrust_penalty={distrust_penalty:.3f})"
+            )
             return round(reputation, 3)
 
         except Exception as e:
