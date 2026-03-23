@@ -447,21 +447,22 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          // Intro request button
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () {
-                                context.push(
-                                  '/intro-request/${widget.userId}?name=${Uri.encodeComponent(_user!.name)}&role=${_user!.rolePrimary}',
-                                );
-                              },
-                              icon: const Icon(Icons.handshake),
-                              label: const Text('Intro'),
-                              style: ElevatedButton.styleFrom(
-                                minimumSize: const Size(0, 48),
+                          // Intro request button — only show when NOT connected
+                          if (!_isConnected)
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  context.push(
+                                    '/intro-request/${widget.userId}?name=${Uri.encodeComponent(_user!.name)}&role=${_user!.rolePrimary}',
+                                  );
+                                },
+                                icon: const Icon(Icons.handshake),
+                                label: const Text('Intro'),
+                                style: ElevatedButton.styleFrom(
+                                  minimumSize: const Size(0, 48),
+                                ),
                               ),
                             ),
-                          ),
                         ],
                       ),
                     ],
