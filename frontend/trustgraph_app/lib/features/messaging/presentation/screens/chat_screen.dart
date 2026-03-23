@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
+import 'dart:typed_data';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
@@ -598,12 +599,37 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
-  void _openImageViewer(MessageModel message) {
+  String? _resolveImageFileId(MessageModel message) {
+    final metadataFileId = message.metadata?['file_id']?.toString();
+    if (metadataFileId != null && metadataFileId.isNotEmpty) {
+      return metadataFileId;
+    }
+
+    final decrypted = message.decryptedContent;
+    if (decrypted != null && decrypted.isNotEmpty && !decrypted.startsWith('[')) {
+      return decrypted;
+    }
+
+    return null;
+  }
+
+  Future<void> _openImageViewer(MessageModel message) async {
+    Uint8List? imageBytes;
+    final fileId = _resolveImageFileId(message);
+    if (fileId != null) {
+      imageBytes = await context
+          .read<MessagingProvider>()
+          .downloadImage(message.conversationId, fileId);
+    }
+
+    if (!mounted) return;
+
     Navigator.push(
       context,
       PageRouteBuilder(
         opaque: false,
         pageBuilder: (_, __, ___) => FullScreenImageViewer(
+          imageBytes: imageBytes,
           heroTag: 'image_${message.messageId}',
           title: _participantName,
         ),

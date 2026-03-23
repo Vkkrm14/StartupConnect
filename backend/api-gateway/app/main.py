@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -545,6 +546,50 @@ async def proxy_block_user(request: Request):
         json=body, headers=headers
     )
     return response.json()
+
+@app.post("/api/v1/images/upload/{conversation_id}")
+async def proxy_upload_image(request: Request, conversation_id: str):
+    """Proxy to messaging service - upload encrypted image"""
+    headers = {"Authorization": request.headers.get("Authorization", "")}
+    form = await request.form()
+    uploaded_file = form.get("file")
+
+    if uploaded_file is None:
+        raise HTTPException(status_code=400, detail="Missing file field")
+
+    file_bytes = await uploaded_file.read()
+    logger.info(
+        "Image upload proxy: conversation_id=%s filename=%s size_bytes=%s content_type=%s",
+        conversation_id,
+        uploaded_file.filename,
+        len(file_bytes),
+        uploaded_file.content_type,
+    )
+    files = {
+        "file": (
+            uploaded_file.filename or "upload.bin",
+            file_bytes,
+            uploaded_file.content_type or "application/octet-stream",
+        )
+    }
+
+    response = await http_client.post(
+        f"{settings.MESSAGING_SERVICE_URL}/api/v1/images/upload/{conversation_id}",
+        files=files,
+        headers=headers,
+    )
+    logger.info(
+        "Image upload proxy response: conversation_id=%s status=%s",
+        conversation_id,
+        response.status_code,
+    )
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"detail": response.text}
+
+    return JSONResponse(status_code=response.status_code, content=payload)
 
 @app.get("/api/v1/images/download/{conversation_id}/{file_id}")
 async def proxy_download_image(request: Request, conversation_id: str, file_id: str):

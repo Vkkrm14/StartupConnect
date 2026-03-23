@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import '../../services/messaging_provider.dart';
 import '../../data/models/message_model.dart';
 import '../theme/messaging_theme.dart';
 
@@ -148,6 +150,8 @@ class _MessageBubbleState extends State<MessageBubble>
   }
 
   Widget _buildImageBubble(bool isDark) {
+    final fileId = _resolveImageFileId();
+
     return GestureDetector(
       onTap: widget.onImageTap,
       child: Container(
@@ -165,9 +169,48 @@ class _MessageBubbleState extends State<MessageBubble>
           borderRadius: BorderRadius.circular(16),
           child: widget.message.metadata?['local_path'] != null
               ? _buildLocalImage()
+              : fileId != null
+                  ? _buildRemoteImage(fileId, isDark)
               : _buildPlaceholderImage(isDark),
         ),
       ),
+    );
+  }
+
+  String? _resolveImageFileId() {
+    final metadataFileId = widget.message.metadata?['file_id']?.toString();
+    if (metadataFileId != null && metadataFileId.isNotEmpty) {
+      return metadataFileId;
+    }
+
+    final decrypted = widget.message.decryptedContent;
+    if (decrypted != null && decrypted.isNotEmpty && !decrypted.startsWith('[')) {
+      return decrypted;
+    }
+
+    return null;
+  }
+
+  Widget _buildRemoteImage(String fileId, bool isDark) {
+    final provider = context.read<MessagingProvider>();
+
+    return FutureBuilder(
+      future: provider.downloadImage(widget.message.conversationId, fileId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.done &&
+            snapshot.data != null &&
+            snapshot.data!.isNotEmpty) {
+          return Image.memory(
+            snapshot.data!,
+            width: 200,
+            height: 200,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+          );
+        }
+
+        return _buildPlaceholderImage(isDark);
+      },
     );
   }
 
