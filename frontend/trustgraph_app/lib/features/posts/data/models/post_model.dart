@@ -75,6 +75,7 @@ class PostModel {
 
   PostModel copyWith({
     int? likeCount,
+    int? commentCount,
     bool? isLikedByCurrentUser,
   }) {
     return PostModel(
@@ -88,7 +89,7 @@ class PostModel {
       tags: tags,
       mediaUrls: mediaUrls,
       likeCount: likeCount ?? this.likeCount,
-      commentCount: commentCount,
+      commentCount: commentCount ?? this.commentCount,
       isPinned: isPinned,
       createdAt: createdAt,
       updatedAt: updatedAt,

@@ -201,5 +201,83 @@ class PostService:
         )
         return True
 
+    # ── Comments ──
+
+    async def get_comments(self, post_id: str) -> List[dict]:
+        db = mongo_client.get_db()
+
+        post = await db.posts.find_one(
+            {"post_id": post_id, "is_deleted": False}, {"_id": 0, "post_id": 1}
+        )
+        if not post:
+            raise ValueError("Post not found")
+
+        cursor = db.post_comments.find({"post_id": post_id}, {"_id": 0}).sort(
+            "created_at", -1
+        )
+        return await cursor.to_list(length=500)
+
+    async def create_comment(self, post_id: str, user_id: str, body: str) -> dict:
+        db = mongo_client.get_db()
+
+        post = await db.posts.find_one(
+            {"post_id": post_id, "is_deleted": False}, {"_id": 0, "post_id": 1}
+        )
+        if not post:
+            raise ValueError("Post not found")
+
+        author_name = await self.get_user_name(user_id)
+        now = datetime.utcnow()
+        comment_id = str(uuid.uuid4())
+
+        doc = {
+            "comment_id": comment_id,
+            "post_id": post_id,
+            "author_user_id": user_id,
+            "author_name": author_name,
+            "body": body.strip(),
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        await db.post_comments.insert_one(doc)
+        await db.posts.update_one(
+            {"post_id": post_id},
+            {"$inc": {"comment_count": 1}, "$set": {"updated_at": now}},
+        )
+
+        doc.pop("_id", None)
+        return doc
+
+    async def delete_comment(self, post_id: str, comment_id: str, user_id: str) -> bool:
+        db = mongo_client.get_db()
+
+        post = await db.posts.find_one(
+            {"post_id": post_id, "is_deleted": False}, {"_id": 0, "post_id": 1}
+        )
+        if not post:
+            raise ValueError("Post not found")
+
+        comment = await db.post_comments.find_one(
+            {"post_id": post_id, "comment_id": comment_id}
+        )
+        if not comment:
+            return False
+
+        if comment["author_user_id"] != user_id:
+            raise PermissionError("Only the comment author can delete this comment")
+
+        result = await db.post_comments.delete_one(
+            {"post_id": post_id, "comment_id": comment_id}
+        )
+        if result.deleted_count == 0:
+            return False
+
+        await db.posts.update_one(
+            {"post_id": post_id, "comment_count": {"$gt": 0}},
+            {"$inc": {"comment_count": -1}, "$set": {"updated_at": datetime.utcnow()}},
+        )
+        return True
+
 
 post_service = PostService()

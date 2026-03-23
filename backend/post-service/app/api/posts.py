@@ -9,6 +9,8 @@ from app.schemas.post_schemas import (
     PostUpdate,
     PostResponse,
     PostFeedResponse,
+    CommentCreate,
+    CommentResponse,
 )
 from app.services.post_service import post_service
 
@@ -109,3 +111,57 @@ async def unlike_post(
 ):
     """Remove like from a post — any authenticated user."""
     await post_service.unlike_post(post_id, current_user.user_id)
+
+
+@router.get("/{post_id}/comments", response_model=list[CommentResponse])
+async def get_comments(
+    post_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Get comments for a post — any authenticated user."""
+    try:
+        return await post_service.get_comments(post_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post(
+    "/{post_id}/comments",
+    response_model=CommentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_comment(
+    post_id: str,
+    data: CommentCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Create a comment on a post — any authenticated user."""
+    try:
+        return await post_service.create_comment(
+            post_id=post_id,
+            user_id=current_user.user_id,
+            body=data.body,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/{post_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_comment(
+    post_id: str,
+    comment_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Delete a comment — comment author only."""
+    try:
+        deleted = await post_service.delete_comment(
+            post_id=post_id,
+            comment_id=comment_id,
+            user_id=current_user.user_id,
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Comment not found")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
