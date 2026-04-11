@@ -89,7 +89,7 @@ where $\gamma(P)=1$ indicates governance-valid paths.
 
 The routing objective is:
 \begin{equation}
-P^*=\arg\max_{P\in\mathcal{P}_{fi}^{(H)}}\left[\gamma(P)\cdot\left(\text{score}(P)-\lambda_{\rho}\bar{\rho}(P)\right)\right]
+P^*=\arg\max_{P\in\mathcal{P}_{fi}^{(H)}}\left[\gamma(P)\cdot\text{score}(P)\right]
 \end{equation}
 where $\bar{\rho}(P)$ is path-level reputation risk from distrust incidence and $\lambda_{\rho}\geq 0$ controls penalty strength.
 
@@ -143,19 +143,21 @@ f_{int}(u,v)=\min\left(1,\frac{\log(1+n_{uv})}{\log(1+n_{ref})}\right)
 f_{succ}(u,v)=\frac{c_{uv}^{succ}+1}{c_{uv}^{req}+2}
 \end{equation}
 \begin{equation}
-f_{rec}(u,v)=\exp\left(-\frac{\Delta t_{uv}}{\tau}\right),\quad \tau=90
+f_{rec}(u,v)=\exp\left(-\frac{\Delta t_{uv}}{\tau}\right),\quad \tau>0
 \end{equation}
-where $n_{ref}$ is a saturation reference selected from historical percentile statistics.
+where $n_{ref}$ is fixed to the 90th percentile of directed-edge interaction counts $\{n_{uv}\}$ computed on the calibration split for each condition-seed pair.
 
 \subsection{Trust Score Model}
 For an accepted trust edge, the trust score is computed from interaction history, intro outcomes, and recency:
 \begin{equation}
 \begin{aligned}
-\text{trust}(u,v) &= 0.40 \cdot f_{int}(u,v) + 0.40 \cdot f_{succ}(u,v) \\
-&\quad + 0.20 \cdot f_{rec}(u,v)
+\text{trust}(u,v) &= w_{int} \cdot f_{int}(u,v) + w_{succ} \cdot f_{succ}(u,v) \\
+&\quad + w_{rec} \cdot f_{rec}(u,v)
 \end{aligned}
 \end{equation}
-where $f_{int}$ is interaction-derived contribution, $f_{succ}$ is successful-introduction contribution, and $f_{rec}$ is recency contribution in a 90-day decay window.
+where $f_{int}$ is interaction-derived contribution, $f_{succ}$ is successful-introduction contribution, and $f_{rec}$ is recency contribution. Coefficients satisfy $w_{int},w_{succ},w_{rec}\ge0$ and $w_{int}+w_{succ}+w_{rec}=1$.
+
+Rather than fixing coefficients a priori, $(w_{int},w_{succ},w_{rec},\tau)$ are estimated by constrained grid search on a calibration split of historical intro outcomes (minimizing log-loss). The learned parameters are then frozen for evaluation trials under the same seed/condition. This removes hidden hyperparameters and exposes explicit, reproducible calibration artifacts.
 
 Relationship strength and recency edge factors are computed similarly and clipped to $[0,1]$. Mutual trust factor is modeled as:
 \begin{equation}
@@ -180,7 +182,7 @@ Path-level reputation risk is the mean node penalty:
 \begin{equation}
 \bar{\rho}(P)=\frac{1}{|P|}\sum_{v\in P}\rho(v),\quad \rho(v)=\min(1,\beta\,d_v^{act})
 \end{equation}
-The risk term is only evaluated after hard governance filtering and acts as a tie-breaker among valid paths.
+The scoring hyperparameters $(\alpha,\lambda_{\rho},\beta)$ are calibrated on a path-level calibration objective (mean-squared error to pseudo-historical path utility) and then frozen for evaluation within the same condition-seed. We report calibrated values and local sensitivity deltas (\(\pm 20\%\) perturbations per parameter with others fixed) in the calibration artifact.
 
 \subsection{Distrust Governance}
 A candidate path is rejected if any path node has active undisputed distrust relationships. Disputed or inactive distrust edges are excluded from rejection logic. Additional reputation penalty is applied based on incoming active distrust count. This two-tier design separates strict safety constraints from softer prioritization signals.
@@ -234,6 +236,9 @@ RQ1 targets outcome quality under conflict pressure, RQ2 isolates ranking-featur
 
 The variant progression is cumulative by design so each step adds one interpretable mechanism. This supports causal-style attribution for quality and latency differences.
 
+\subsection{Trust Hyperparameter Robustness}
+To assess sensitivity, we run robustness checks around the calibrated point for all scoring hyperparameters: (i) simplex-preserving perturbations of $(w_{int},w_{succ},w_{rec})$, (ii) decay-scale perturbations for $\tau$, and (iii) local \(\pm 20\%\) perturbations for $\alpha$, $\lambda_{\rho}$, and $\beta$ with relative calibration-loss deltas recorded. Reported gains are treated as robust only when directional conclusions remain stable across these neighborhoods.
+
 \subsection{Simulation Protocol}
 \begin{enumerate}
     \item Seed graph and relationship state with controlled random seeds.
@@ -280,11 +285,15 @@ Disputed distrust share & Higher & Medium & Lower \\
 \end{table}
 
 \subsection{Workflow Outcome Simulator}
-For each selected path, intermediary approvals are simulated sequentially. Approval probability at hop position $k$ is modeled with a calibrated logistic form:
+For each selected path, intermediary approvals are simulated sequentially. To avoid circular validation, approval probability excludes path score and instead uses exogenous behavioral variables sampled independently of ranking.
+
+Approval probability at hop position $k$ is modeled as:
 \begin{equation}
-p_{approve}^{(k)}=\sigma\left(\eta_0+\eta_1\,\text{score}(P)-\eta_2\,h-\eta_3\,\bar{\rho}(P)+\eta_4\,\mathbb{I}_{mutual}\right)
+p_{approve}^{(k)}=\sigma\left(\eta_0+\eta_1\,\phi_{fi}+\eta_2\,\bar{\psi}(P)+\eta_3\,\bar{\kappa}(P)-\eta_4\,h-\eta_5\,c-\eta_6\,\mathbb{I}_{blocked}(P)\right)
 \end{equation}
-where $\sigma(\cdot)$ is the sigmoid function and parameters $(\eta_i)$ are fixed across variants. This design preserves a consistent behavioral model while allowing route quality to drive acceptance and completion differences.
+where $\phi_{fi}$ is founder-investor endpoint affinity, $\bar{\psi}(P)$ is mean intermediary responsiveness, $\bar{\kappa}(P)$ is mean intermediary reliability, $c$ is conflict pressure, and $\sigma(\cdot)$ is the sigmoid function. Parameters $(\eta_i)$ are fixed across variants.
+
+Completion is then simulated with a per-step logistic probability using the same exogenous factors and governance friction; for multi-intermediary chains, total completion probability is the product of step-level probabilities. This preserves variant comparability while ensuring path score remains an evaluation variable, not a direct approval driver.
 
 \subsection{Randomization and Control Strategy}
 Random seeds are fixed and versioned for full replay. Query order is shuffled per seed to reduce temporal ordering artifacts in cache-sensitive paths. All variants run against the same generated graph state before any variant-specific workflow side effects are applied, preventing contamination across ablations.
