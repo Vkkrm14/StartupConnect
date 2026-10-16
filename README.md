@@ -1,216 +1,170 @@
 # TrustGraph - Startup Ecosystem Platform
 
-A trust-weighted graph platform for warm introductions between Founders and Investors.
+A trust-weighted graph platform for warm introductions between founders and investors. Instead of matching on keywords alone, TrustGraph finds and ranks introduction paths by trust, relationship strength, recency, mutual trust and path length.
+
+> A shorter path with stronger, recent and mutual trust is more likely to produce a successful introduction.
 
 ---
 
-## ⚡ **Quick Start (For First-Time Setup)**
+## Architecture
 
-### **Prerequisites**
-- **Docker Desktop** - [Download](https://www.docker.com/products/docker-desktop/)
-- **Python 3.11+** - [Download](https://www.python.org/downloads/)
-- **Flutter SDK** - [Download](https://docs.flutter.dev/get-started/install)
+```
+                    Flutter App (mobile / web)
+                               |
+                      API Gateway :8000
+                               |
+   +-----------+-----------+---+-------+-------------+
+   |           |           |           |             |
+ Graph      Workflow     Search     Messaging       Post
+ :8001       :8002       :8003       :8004          :8005
+   |           |           |           |             |
+JanusGraph  MongoDB   Elasticsearch  Cassandra    MongoDB
+Cassandra   Redis     MongoDB
+Elasticsearch
+Redis
 
-### **Automated Setup (Recommended)**
-
-**Windows PowerShell:**
-```powershell
-# Navigate to project
-cd e:\Sem-6\NoSQL\startupConnect_draft
-
-# Run quick start script
-.\start.ps1
+Shared infrastructure: Redis (cache), Redpanda/Kafka (events)
 ```
 
-**Manual Setup:**
-```powershell
-# 1. Start backend services
+| Layer | Technology |
+|---|---|
+| Frontend | Flutter |
+| Services | FastAPI (Python 3.11+) |
+| Graph | JanusGraph on Cassandra, Elasticsearch index backend |
+| Documents | MongoDB (workflows, posts) |
+| Search | Elasticsearch |
+| Messaging | Cassandra |
+| Cache / events | Redis, Redpanda (Kafka) |
+| Auth | JWT |
+| Orchestration | Docker Compose |
+
+## Quick Start
+
+### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- [Python 3.11+](https://www.python.org/downloads/)
+- [Flutter SDK](https://docs.flutter.dev/get-started/install)
+
+### 1. Start the backend
+
+```bash
 docker-compose up -d
 
-# 2. Wait 60 seconds, then seed data
-python backend\scripts\seed_data.py
+# Wait for services to become healthy (2-3 minutes)
+docker-compose ps
+docker-compose logs -f
+```
 
-# 3. Run Flutter app
-cd frontend\trustgraph_app
+### 2. Seed data
+
+```bash
+python backend/scripts/seed_data.py
+```
+
+### 3. Run the Flutter app
+
+```bash
+cd frontend/trustgraph_app
 flutter pub get
 flutter run -d chrome
 ```
 
-📚 **Detailed Setup Guide:** See [SETUP_GUIDE.md](SETUP_GUIDE.md) for complete instructions
+### Service endpoints
 
----
+| Service | URL |
+|---|---|
+| API Gateway | http://localhost:8000/docs |
+| Graph Service | http://localhost:8001/docs |
+| Workflow Service | http://localhost:8002/docs |
+| Search Service | http://localhost:8003/docs |
+| Messaging Service | http://localhost:8004/docs |
+| Post Service | http://localhost:8005/docs |
+| JanusGraph | ws://localhost:8182/gremlin |
+| MongoDB | mongodb://localhost:27017 |
+| Elasticsearch | http://localhost:9200 |
+| Redis | localhost:6379 |
 
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Frontend Layer                        │
-│                     Flutter Mobile App                       │
-└─────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────┐
-│                      API Gateway (8000)                      │
-│                 Authentication & Routing                     │
-└─────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-┌───────▼────────┐  ┌────────▼────────┐  ┌────────▼────────┐
-│ Graph Service  │  │ Workflow Service│  │ Search Service  │
-│    (8001)      │  │     (8002)      │  │     (8003)      │
-│                │  │                 │  │                 │
-│  JanusGraph    │  │    MongoDB      │  │ Elasticsearch   │
-│  Cassandra     │  │    Redis        │  │    MongoDB      │
-│  Redis Cache   │  │    Kafka        │  │    Redis        │
-└────────────────┘  └─────────────────┘  └─────────────────┘
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Docker & Docker Compose
-- Python 3.11+
-- Flutter 3.x (for mobile app)
-
-### 1. Start Infrastructure
-
-```bash
-# Start all services
-docker-compose up -d
-
-# Wait for services to be healthy (2-3 minutes)
-docker-compose ps
-
-# View logs
-docker-compose logs -f
-```
-
-### 2. Initialize Graph Schema
-
-```bash
-docker-compose exec graph-service python scripts/init_schema.py
-```
-
-### 3. Access Services
-
-- **API Gateway**: http://localhost:8000/docs
-- **Graph Service**: http://localhost:8001/docs
-- **Workflow Service**: http://localhost:8002/docs
-- **Search Service**: http://localhost:8003/docs
-- **JanusGraph**: ws://localhost:8182/gremlin
-- **MongoDB**: mongodb://localhost:27017
-- **Elasticsearch**: http://localhost:9200
-- **Redis**: localhost:6379
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 startupConnect_draft/
 ├── backend/
-│   ├── api-gateway/          # Main API Gateway (FastAPI)
-│   ├── graph-service/        # Graph traversal & trust scoring
+│   ├── api-gateway/          # Public entry point, auth, routing
+│   ├── graph-service/        # Graph traversal and trust scoring
 │   ├── workflow-service/     # Intro workflow state machine
-│   ├── search-service/       # Search & discovery
+│   ├── search-service/       # Search and discovery
+│   ├── messaging-service/    # Conversations and messages
+│   ├── post-service/         # Posts and feed
 │   ├── shared/               # Shared libraries
-│   └── scripts/              # Database init scripts
+│   └── scripts/              # Seeding, backfill and connection tests
 ├── frontend/
-│   └── trustgraph_app/       # Flutter mobile app
+│   └── trustgraph_app/       # Flutter app
 ├── docker-compose.yml
-└── README.md
+├── Dockerfile.janusgraph
+└── janusgraph-server.yaml
 ```
 
-## 🎯 Core Features
+## Core Features
 
-### 1. Trust-Weighted Graph
-- Multi-role nodes (Founder/Investor/Connector)
-- Trust edges with scoring (trust, strength, recency)
-- Mutual trust detection
-- Dynamic weight updates
+- **Trust-weighted graph**: multi-role nodes (founder, investor, connector), trust edges scored on trust, strength and recency, mutual-trust detection and dynamic weight updates.
+- **Intro path discovery**: up to 4 hops, trust-weighted scoring, mutual-trust prioritisation and success-probability estimates.
+- **Intro workflow engine**: stepwise approval chain, intermediary accept/decline, automatic graph updates and outcome tracking.
+- **Search and discovery**: graph-aware ranking, domain/tag filters, investor thesis matching and connector discovery.
+- **Messaging and posts**: conversations stored in Cassandra, posts and feed in MongoDB.
+- **Authentication**: JWT-based, with role-aware behaviour.
 
-### 2. Intro Path Discovery
-- Max 4-hop constraint
-- Trust-weighted scoring
-- Mutual trust prioritization
-- Success probability prediction
+## Graph Schema
 
-### 3. Intro Workflow Engine
-- Stepwise approval chain
-- Intermediary accept/decline
-- Auto graph updates
-- Outcome tracking
+**Vertices:** `User` (founder, investor, connector), `Startup`, `Organization` (VC, accelerator, incubator)
 
-### 4. Search & Discovery
-- Graph-aware ranking
-- Domain/tag filtering
-- Investor thesis matching
-- Connector discovery
+**Edges:**
+- `TRUSTS`: User → User
+- `FOUNDED`: User → Startup
+- `INVESTED_IN`: User → Startup
+- `MEMBER_OF`: User → Organization
+- `WORKED_WITH`: User → User
 
-## 🛠️ Development
+## Development
 
-### Backend Services
-
-Each service follows the same structure:
+Each backend service follows the same layout:
 
 ```
 service-name/
 ├── app/
-│   ├── api/              # Route handlers
-│   ├── core/             # Config & clients
-│   ├── models/           # DB models
-│   ├── schemas/          # Pydantic schemas
-│   ├── services/         # Business logic
-│   └── main.py           # FastAPI app
+│   ├── api/        # Route handlers
+│   ├── core/       # Config and clients
+│   ├── models/     # DB models
+│   ├── schemas/    # Pydantic schemas
+│   ├── services/   # Business logic
+│   └── main.py
 ├── tests/
 ├── Dockerfile
 └── requirements.txt
 ```
 
-### Running Tests
+Run a service locally:
 
 ```bash
-# Graph service tests
-docker-compose exec graph-service pytest
-
-# Workflow service tests
-docker-compose exec workflow-service pytest
-
-# Search service tests
-docker-compose exec search-service pytest
-```
-
-### Local Development
-
-```bash
-# Install dependencies
 cd backend/graph-service
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run locally (update .env with local URLs)
 uvicorn app.main:app --reload --port 8001
 ```
 
-## 📊 Graph Schema
-
-### Vertex Types
-- **User**: Founders, Investors, Connectors
-- **Startup**: Companies in the ecosystem
-- **Organization**: VCs, Accelerators, Incubators
-
-### Edge Types
-- **TRUSTS**: User → User (trust relationship)
-- **FOUNDED**: User → Startup (founder relationship)
-- **INVESTED_IN**: User → Startup (investment)
-- **MEMBER_OF**: User → Organization (employment)
-- **WORKED_WITH**: User → User (collaboration)
-
-## 🔒 Environment Variables
-
-Create `.env` files in each service directory:
+Run tests:
 
 ```bash
-# graph-service/.env
+docker-compose exec graph-service pytest
+docker-compose exec workflow-service pytest
+docker-compose exec search-service pytest
+```
+
+### Environment variables
+
+Create a `.env` per service, for example `graph-service/.env`:
+
+```bash
 ENV=development
 JANUSGRAPH_URL=ws://janusgraph:8182/gremlin
 REDIS_URL=redis://redis:6379
@@ -219,42 +173,39 @@ MAX_INTRO_PATH_HOPS=4
 MIN_TRUST_SCORE=0.3
 ```
 
-## 📈 Monitoring
+`.env` files are git-ignored; never commit secrets.
 
-- **Health Checks**: Each service has `/health` endpoint
-- **Metrics**: Prometheus metrics at `/metrics`
-- **Logs**: Structured JSON logging
+## Troubleshooting
 
-## 🐛 Troubleshooting
-
-### JanusGraph connection issues
+**JanusGraph connection issues**
 ```bash
-# Check JanusGraph health
 docker-compose exec janusgraph bin/gremlin.sh
 gremlin> :remote connect tinkerpop.server conf/remote.yaml
 gremlin> :remote console
 gremlin> g.V().count()
 ```
 
-### Cassandra not ready
+**Cassandra not ready**
 ```bash
-# Wait for Cassandra to stabilize
 docker-compose logs cassandra
-# Restart if needed
 docker-compose restart janusgraph
 ```
 
-## 📚 API Documentation
+**Verify connectivity to all stores**
+```bash
+python backend/scripts/test_connections.py
+```
 
-Visit `/docs` on any service for interactive API documentation (Swagger UI).
+## Monitoring
 
-## 🤝 Contributing
+Every service exposes `/health`. Interactive API docs (Swagger UI) are at `/docs` on each service.
 
-1. Create feature branch
-2. Make changes
-3. Write tests
-4. Submit PR
+## Contributing
 
-## 📄 License
+1. Create a feature branch
+2. Make changes and add tests
+3. Open a PR
 
-MIT License - see LICENSE file
+## License
+
+MIT

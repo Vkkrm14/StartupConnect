@@ -87,3 +87,7 @@ temp/
 # OS Files
 Thumbs.db
 .DS_Store
+
+# Research / internal docs (not part of the repo)
+research_paper_package/
+PROJECT_EXPLANATION.md
